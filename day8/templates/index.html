@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>LLM Agent Chat с поддержкой файлов</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .chat-container {
+            max-width: 900px;
+            width: 100%;
+            height: 90vh;
+            background: white;
+            border-radius: 24px;
+            box-shadow: 0 20px 35px -10px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-header {
+            background: #2c3e66;
+            color: white;
+            padding: 18px 24px;
+            font-size: 1.4rem;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            flex-wrap: wrap;
+        }
+        .agent-id {
+            font-size: 0.8rem;
+            background: rgba(255,255,255,0.2);
+            padding: 4px 12px;
+            border-radius: 40px;
+            font-family: monospace;
+        }
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: #f9fafc;
+        }
+        .message {
+            display: flex;
+            flex-direction: column;
+            max-width: 80%;
+            animation: fadeIn 0.2s ease;
+        }
+        .message.user {
+            align-self: flex-end;
+        }
+        .message.assistant {
+            align-self: flex-start;
+        }
+        .message-bubble {
+            padding: 10px 16px;
+            border-radius: 22px;
+            line-height: 1.45;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .user .message-bubble {
+            background: #2c3e66;
+            color: white;
+            border-bottom-right-radius: 6px;
+        }
+        .assistant .message-bubble {
+            background: #e4e6eb;
+            color: #1e1e2f;
+            border-bottom-left-radius: 6px;
+        }
+        .message-meta {
+            font-size: 0.7rem;
+            margin-top: 4px;
+            margin-left: 12px;
+            margin-right: 12px;
+            color: #6c757d;
+        }
+        .user .message-meta {
+            text-align: right;
+        }
+        .attachments {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .attachment {
+            background: rgba(0,0,0,0.05);
+            border-radius: 8px;
+            padding: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+        .attachment img {
+            max-width: 100px;
+            max-height: 100px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .attachment .file-icon {
+            width: 32px;
+            height: 32px;
+            background: #6c757d;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 18px;
+        }
+        .attachment .file-info {
+            display: flex;
+            flex-direction: column;
+        }
+        .attachment .filename {
+            font-weight: 500;
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .attachment .file-size {
+            font-size: 0.7rem;
+            color: #6c757d;
+        }
+        .file-preview-area {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        .file-preview-item {
+            position: relative;
+            background: white;
+            border-radius: 8px;
+            padding: 8px;
+            border: 1px solid #dee2e6;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .file-preview-item img {
+            width: 40px;
+            height: 40px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+        .remove-file {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: #dc3545;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .typing-indicator {
+            display: flex;
+            gap: 5px;
+            padding: 10px 16px;
+            background: #e4e6eb;
+            border-radius: 22px;
+            width: fit-content;
+            align-items: center;
+        }
+        .typing-indicator span {
+            width: 8px;
+            height: 8px;
+            background: #6c757d;
+            border-radius: 50%;
+            display: inline-block;
+            animation: blink 1.3s infinite;
+        }
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes blink {
+            0%, 60%, 100% { opacity: 0.3; transform: translateY(0);}
+            30% { opacity: 1; transform: translateY(-4px);}
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px);}
+            to { opacity: 1; transform: translateY(0);}
+        }
+        .input-area {
+            padding: 16px 20px;
+            background: white;
+            border-top: 1px solid #ddd;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .input-controls {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        textarea {
+            flex: 1;
+            border: 1px solid #ccc;
+            border-radius: 28px;
+            padding: 12px 18px;
+            font-family: inherit;
+            font-size: 1rem;
+            resize: none;
+            outline: none;
+            transition: 0.2s;
+            max-height: 150px;
+        }
+        textarea:focus {
+            border-color: #2c3e66;
+            box-shadow: 0 0 0 2px rgba(44,62,102,0.2);
+        }
+        button {
+            background: #2c3e66;
+            border: none;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 40px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 0.9rem;
+        }
+        button:hover {
+            background: #1e2a4a;
+        }
+        button:disabled {
+            background: #9aaebf;
+            cursor: not-allowed;
+        }
+        .file-btn {
+            background: #6c757d;
+            padding: 12px 16px;
+        }
+        .file-btn:hover {
+            background: #5a6268;
+        }
+        .reset-btn {
+            background: #d9534f;
+        }
+        .reset-btn:hover {
+            background: #c9302c;
+        }
+        .error-toast {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: #f8d7da;
+            color: #721c24;
+            padding: 12px 20px;
+            border-radius: 12px;
+            border-left: 5px solid #d9534f;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            font-size: 0.9rem;
+            animation: fadeIn 0.2s;
+        }
+        @media (max-width: 600px) {
+            .message { max-width: 95%; }
+            .chat-container { height: 95vh; }
+            button { padding: 10px 16px; }
+        }
+    </style>
+</head>
+<body>
+<div class="chat-container">
+    <div class="chat-header">
+        <span>🤖 LLM Agent (с поддержкой файлов)</span>
+        <span class="agent-id" id="agentIdLabel">загрузка...</span>
+    </div>
+    <div class="chat-messages" id="chatMessages">
+        <div class="message assistant">
+            <div class="message-bubble">Добро пожаловать! Отправьте сообщение или прикрепите файлы (изображения, PDF, DOCX, TXT).</div>
+        </div>
+    </div>
+    <div class="input-area">
+        <div id="filePreviewArea" class="file-preview-area" style="display: none;"></div>
+        <div class="input-controls">
+            <textarea id="messageInput" rows="1" placeholder="Введите сообщение..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+            <button id="fileBtn" class="file-btn" onclick="document.getElementById('fileInput').click()">📎</button>
+            <input type="file" id="fileInput" multiple style="display: none;" accept="image/*,.txt,.pdf,.docx,.md,.py">
+            <button id="sendBtn" onclick="sendMessage()">Отправить</button>
+            <button id="resetBtn" class="reset-btn" onclick="resetChat()">Очистить</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let isWaiting = false;
+    let selectedFiles = [];
+
+    // Исправленная функция escapeHtml с проверкой типа
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        if (typeof str !== 'string') str = String(str);
+        return str.replace(/[&<>]/g, function(m) {
+            if (m === '&') return '&amp;';
+            if (m === '<') return '&lt;';
+            if (m === '>') return '&gt;';
+            return m;
+        });
+    }
+
+    // Загружаем историю при старте и информацию об агенте
+    async function loadHistory() {
+        try {
+            const response = await fetch('/history');
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const data = await response.json();
+            renderMessages(data.history);
+        } catch (err) {
+            console.error('Ошибка загрузки истории:', err);
+            showError('Не удалось загрузить историю чата');
+        }
+        
+        try {
+            const infoRes = await fetch('/info');
+            if (infoRes.ok) {
+                const info = await infoRes.json();
+                const agentIdSpan = document.getElementById('agentIdLabel');
+                if (agentIdSpan) {
+                    const visionSupport = info.supports_vision ? '🔮' : '📝';
+                    agentIdSpan.textContent = `ID: ${info.agent_id} ${visionSupport}`;
+                }
+            }
+        } catch(e) { console.warn(e); }
+    }
+
+    // Отрисовка сообщений с вложениями
+    function renderMessages(history) {
+        const container = document.getElementById('chatMessages');
+        if (!container) return;
+        container.innerHTML = '';
+        
+        if (!history || history.length === 0) {
+            container.innerHTML = `<div class="message assistant"><div class="message-bubble">История пуста. Напишите что-нибудь или прикрепите файл!</div></div>`;
+            return;
+        }
+        
+        for (const msg of history) {
+            if (msg.role === 'user') {
+                appendMessageToDOM('user', msg.content || '', false, msg.attachments);
+            } else if (msg.role === 'assistant') {
+                appendMessageToDOM('assistant', msg.content || '', false);
+            }
+        }
+        scrollToBottom();
+    }
+
+    // Добавление сообщения в DOM
+    function appendMessageToDOM(role, content, scroll = true, attachments = null) {
+        const container = document.getElementById('chatMessages');
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `message ${role}`;
+        
+        let attachmentsHtml = '';
+        if (attachments && attachments.length > 0) {
+            attachmentsHtml = '<div class="attachments">';
+            for (const att of attachments) {
+                if (att.is_image && att.preview_url) {
+                    attachmentsHtml += `<div class="attachment">
+                        <img src="${escapeHtml(att.preview_url)}" alt="${escapeHtml(att.filename)}" onclick="window.open('${escapeHtml(att.url)}', '_blank')">
+                        <div class="file-info">
+                            <div class="filename">${escapeHtml(att.filename)}</div>
+                            <div class="file-size">${formatFileSize(att.size_bytes)}</div>
+                        </div>
+                    </div>`;
+                } else if (att.url) {
+                    attachmentsHtml += `<div class="attachment">
+                        <div class="file-icon">📄</div>
+                        <div class="file-info">
+                            <div class="filename"><a href="${escapeHtml(att.url)}" target="_blank">${escapeHtml(att.filename)}</a></div>
+                            <div class="file-size">${formatFileSize(att.size_bytes)}</div>
+                        </div>
+                    </div>`;
+                }
+            }
+            attachmentsHtml += '</div>';
+        }
+        
+        // Используем escapeHtml для безопасного отображения контента
+        const safeContent = escapeHtml(content);
+        messageDiv.innerHTML = `
+            <div class="message-bubble">${safeContent || ''}</div>
+            ${attachmentsHtml}
+            <div class="message-meta">${role === 'user' ? 'Вы' : 'Ассистент'} · ${new Date().toLocaleTimeString()}</div>
+        `;
+        container.appendChild(messageDiv);
+        if (scroll) scrollToBottom();
+    }
+
+    function formatFileSize(bytes) {
+        if (!bytes || bytes < 0) return '0 B';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / 1048576).toFixed(1) + ' MB';
+    }
+
+    // Превью выбранных файлов
+    function updateFilePreview() {
+        const previewArea = document.getElementById('filePreviewArea');
+        const fileInput = document.getElementById('fileInput');
+        
+        if (selectedFiles.length === 0) {
+            previewArea.style.display = 'none';
+            previewArea.innerHTML = '';
+            return;
+        }
+        
+        previewArea.style.display = 'flex';
+        previewArea.innerHTML = '';
+        
+        for (let i = 0; i < selectedFiles.length; i++) {
+            const file = selectedFiles[i];
+            const previewItem = document.createElement('div');
+            previewItem.className = 'file-preview-item';
+            
+            if (file.type.startsWith('image/')) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const img = document.createElement('img');
+                    img.src = e.target.result;
+                    previewItem.insertBefore(img, previewItem.firstChild);
+                };
+                reader.readAsDataURL(file);
+            } else {
+                const icon = document.createElement('div');
+                icon.textContent = '📄';
+                icon.style.fontSize = '32px';
+                previewItem.appendChild(icon);
+            }
+            
+            const info = document.createElement('div');
+            info.innerHTML = `<div class="filename">${escapeHtml(file.name)}</div>
+                             <div class="file-size">${formatFileSize(file.size)}</div>`;
+            previewItem.appendChild(info);
+            
+            const removeBtn = document.createElement('div');
+            removeBtn.className = 'remove-file';
+            removeBtn.textContent = '×';
+            removeBtn.onclick = () => removeFile(i);
+            previewItem.appendChild(removeBtn);
+            
+            previewArea.appendChild(previewItem);
+        }
+    }
+    
+    function removeFile(index) {
+        selectedFiles.splice(index, 1);
+        const fileInput = document.getElementById('fileInput');
+        fileInput.value = '';
+        updateFilePreview();
+    }
+    
+    // Обработка выбора файлов
+    document.getElementById('fileInput').addEventListener('change', function(e) {
+        const files = Array.from(e.target.files);
+        const maxSizeMB = 10; // Максимальный размер файла
+        
+        for (const file of files) {
+            if (file.size > maxSizeMB * 1024 * 1024) {
+                showError(`Файл ${file.name} превышает ${maxSizeMB}MB`);
+                continue;
+            }
+            selectedFiles.push(file);
+        }
+        updateFilePreview();
+    });
+
+    let typingElement = null;
+    function showTypingIndicator() {
+        hideTypingIndicator();
+        const container = document.getElementById('chatMessages');
+        typingElement = document.createElement('div');
+        typingElement.className = 'message assistant';
+        typingElement.id = 'typing-indicator';
+        typingElement.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span> Печатает...</div>`;
+        container.appendChild(typingElement);
+        scrollToBottom();
+    }
+    
+    function hideTypingIndicator() {
+        if (typingElement && typingElement.parentNode) {
+            typingElement.parentNode.removeChild(typingElement);
+            typingElement = null;
+        }
+    }
+
+    // Отправка сообщения с файлами
+    async function sendMessage() {
+        const input = document.getElementById('messageInput');
+        const message = input.value.trim();
+        
+        if (!message && selectedFiles.length === 0) {
+            showError('Введите сообщение или прикрепите файл');
+            return;
+        }
+        
+        if (isWaiting) {
+            showError('Подождите, ответ уже загружается');
+            return;
+        }
+
+        isWaiting = true;
+        const sendBtn = document.getElementById('sendBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const fileBtn = document.getElementById('fileBtn');
+        sendBtn.disabled = true;
+        resetBtn.disabled = true;
+        fileBtn.disabled = true;
+        input.disabled = true;
+
+        // Показываем сообщение пользователя
+        if (message) {
+            appendMessageToDOM('user', message, true);
+        }
+        input.value = '';
+        input.style.height = 'auto';
+        
+        // Показываем индикатор печати
+        showTypingIndicator();
+
+        try {
+            const formData = new FormData();
+            if (message) {
+                formData.append('message', message);
+            }
+            
+            for (const file of selectedFiles) {
+                formData.append('files', file);
+            }
+            
+            const response = await fetch('/send', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!response.ok) {
+                const errData = await response.json().catch(() => ({}));
+                throw new Error(errData.detail || `Server error: ${response.status}`);
+            }
+            
+            const data = await response.json();
+            hideTypingIndicator();
+            
+            // Очищаем выбранные файлы
+            selectedFiles = [];
+            updateFilePreview();
+            document.getElementById('fileInput').value = '';
+            
+            // Обновляем всю историю
+            renderMessages(data.history);
+        } catch (err) {
+            hideTypingIndicator();
+            showError(`Ошибка: ${err.message}`);
+            const container = document.getElementById('chatMessages');
+            const errorDiv = document.createElement('div');
+            errorDiv.className = 'message assistant';
+            errorDiv.innerHTML = `<div class="message-bubble" style="background:#f8d7da; color:#721c24;">❌ Не удалось получить ответ: ${escapeHtml(err.message)}</div>`;
+            container.appendChild(errorDiv);
+            scrollToBottom();
+        } finally {
+            isWaiting = false;
+            sendBtn.disabled = false;
+            resetBtn.disabled = false;
+            fileBtn.disabled = false;
+            input.disabled = false;
+            input.focus();
+        }
+    }
+
+    // Очистка истории
+    async function resetChat() {
+        if (isWaiting) {
+            showError('Дождитесь завершения текущего запроса');
+            return;
+        }
+        if (!confirm('Вы уверены, что хотите очистить всю историю диалога?')) return;
+        try {
+            const response = await fetch('/reset', { method: 'POST' });
+            if (!response.ok) throw new Error(`Reset failed: ${response.status}`);
+            const container = document.getElementById('chatMessages');
+            container.innerHTML = `<div class="message assistant"><div class="message-bubble">История очищена. Начните новый диалог.</div></div>`;
+            selectedFiles = [];
+            updateFilePreview();
+            document.getElementById('fileInput').value = '';
+            showError('История успешно очищена', 'success');
+        } catch (err) {
+            showError(`Ошибка очистки: ${err.message}`);
+        }
+    }
+
+    function scrollToBottom() {
+        const container = document.getElementById('chatMessages');
+        if (container) container.scrollTop = container.scrollHeight;
+    }
+
+    function showError(msg, type = 'error') {
+        const toast = document.createElement('div');
+        toast.className = 'error-toast';
+        toast.style.background = type === 'success' ? '#d4edda' : '#f8d7da';
+        toast.style.color = type === 'success' ? '#155724' : '#721c24';
+        toast.style.borderLeftColor = type === 'success' ? '#28a745' : '#d9534f';
+        toast.innerText = msg;
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 4000);
+    }
+
+    // Автоматическое расширение textarea
+    const textarea = document.getElementById('messageInput');
+    if (textarea) {
+        textarea.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+        });
+    }
+
+    // Загружаем историю при старте
+    loadHistory();
+</script>
+</body>
+</html>
