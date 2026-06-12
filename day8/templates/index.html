@@ -47,6 +47,37 @@
             border-radius: 40px;
             font-family: monospace;
         }
+        
+        /* Блок статистики токенов */
+        .token-stats {
+            background: #e8f0fe;
+            border-bottom: 1px solid #c8d6e5;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-around;
+            flex-wrap: wrap;
+            gap: 15px;
+            font-size: 0.85rem;
+            font-family: 'Courier New', monospace;
+        }
+        .token-stats span {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: white;
+            padding: 4px 12px;
+            border-radius: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .token-stats .stat-label {
+            font-weight: 600;
+            color: #2c3e66;
+        }
+        .token-stats .stat-value {
+            color: #1e2a4a;
+            font-weight: 700;
+        }
+        
         .chat-messages {
             flex: 1;
             overflow-y: auto;
@@ -94,6 +125,16 @@
         }
         .user .message-meta {
             text-align: right;
+        }
+        .token-info {
+            font-size: 0.7rem;
+            color: #6c757d;
+            margin-top: 4px;
+            margin-left: 12px;
+            font-family: 'Courier New', monospace;
+        }
+        .assistant .token-info {
+            color: #6c757d;
         }
         .attachments {
             margin-top: 8px;
@@ -287,6 +328,8 @@
             .message { max-width: 95%; }
             .chat-container { height: 95vh; }
             button { padding: 10px 16px; }
+            .token-stats { font-size: 0.7rem; gap: 8px; }
+            .token-stats span { padding: 2px 8px; }
         }
     </style>
 </head>
@@ -296,6 +339,15 @@
         <span>🤖 LLM Agent (с поддержкой файлов)</span>
         <span class="agent-id" id="agentIdLabel">загрузка...</span>
     </div>
+    
+    <!-- Блок статистики токенов -->
+    <div class="token-stats">
+        <span>📤 <span class="stat-label">Токенов в запросе:</span> <span class="stat-value" id="prompt-tokens">0</span></span>
+        <span>💬 <span class="stat-label">Токенов в ответе:</span> <span class="stat-value" id="completion-tokens">0</span></span>
+        <span>📊 <span class="stat-label">Токенов в запросе (всего):</span> <span class="stat-value" id="last-total">0</span></span>
+        <span>🔁 <span class="stat-label">Всего за сессию:</span> <span class="stat-value" id="session-tokens">0</span></span>
+    </div>
+    
     <div class="chat-messages" id="chatMessages">
         <div class="message assistant">
             <div class="message-bubble">Добро пожаловать! Отправьте сообщение или прикрепите файлы (изображения, PDF, DOCX, TXT).</div>
@@ -328,6 +380,28 @@
             return m;
         });
     }
+    
+    // Функция обновления статистики токенов
+    function updateTokenStats(stats) {
+        if (!stats) return;
+        document.getElementById('prompt-tokens').textContent = stats.last_prompt_tokens || 0;
+        document.getElementById('completion-tokens').textContent = stats.last_completion_tokens || 0;
+        document.getElementById('last-total').textContent = stats.last_total_tokens || 0;
+        document.getElementById('session-tokens').textContent = stats.session_total_tokens || 0;
+    }
+    
+    // Загрузка статистики при старте
+    async function loadTokenStats() {
+        try {
+            const response = await fetch('/stats');
+            if (response.ok) {
+                const stats = await response.json();
+                updateTokenStats(stats);
+            }
+        } catch (err) {
+            console.warn('Could not load token stats:', err);
+        }
+    }
 
     // Загружаем историю при старте и информацию об агенте
     async function loadHistory() {
@@ -350,11 +424,18 @@
                     const visionSupport = info.supports_vision ? '🔮' : '📝';
                     agentIdSpan.textContent = `ID: ${info.agent_id} ${visionSupport}`;
                 }
+                // Также обновляем статистику из info
+                if (info.token_stats) {
+                    updateTokenStats(info.token_stats);
+                }
             }
         } catch(e) { console.warn(e); }
+        
+        // Загружаем статистику отдельно
+        await loadTokenStats();
     }
 
-    // Отрисовка сообщений с вложениями
+    // Отрисовка сообщений с вложениями и информацией о токенах
     function renderMessages(history) {
         const container = document.getElementById('chatMessages');
         if (!container) return;
@@ -369,14 +450,14 @@
             if (msg.role === 'user') {
                 appendMessageToDOM('user', msg.content || '', false, msg.attachments);
             } else if (msg.role === 'assistant') {
-                appendMessageToDOM('assistant', msg.content || '', false);
+                appendMessageToDOM('assistant', msg.content || '', false, null, msg.tokens);
             }
         }
         scrollToBottom();
     }
 
     // Добавление сообщения в DOM
-    function appendMessageToDOM(role, content, scroll = true, attachments = null) {
+    function appendMessageToDOM(role, content, scroll = true, attachments = null, tokens = null) {
         const container = document.getElementById('chatMessages');
         const messageDiv = document.createElement('div');
         messageDiv.className = `message ${role}`;
@@ -406,11 +487,18 @@
             attachmentsHtml += '</div>';
         }
         
+        // Информация о токенах для сообщений ассистента
+        let tokenInfoHtml = '';
+        if (role === 'assistant' && tokens && tokens.total_tokens) {
+            tokenInfoHtml = `<div class="token-info">📊 Токены: prompt: ${tokens.prompt_tokens || 0} | completion: ${tokens.completion_tokens || 0} | total: ${tokens.total_tokens || 0}</div>`;
+        }
+        
         // Используем escapeHtml для безопасного отображения контента
         const safeContent = escapeHtml(content);
         messageDiv.innerHTML = `
             <div class="message-bubble">${safeContent || ''}</div>
             ${attachmentsHtml}
+            ${tokenInfoHtml}
             <div class="message-meta">${role === 'user' ? 'Вы' : 'Ассистент'} · ${new Date().toLocaleTimeString()}</div>
         `;
         container.appendChild(messageDiv);
@@ -571,6 +659,11 @@
             const data = await response.json();
             hideTypingIndicator();
             
+            // Обновляем статистику токенов
+            if (data.token_stats) {
+                updateTokenStats(data.token_stats);
+            }
+            
             // Очищаем выбранные файлы
             selectedFiles = [];
             updateFilePreview();
@@ -597,13 +690,13 @@
         }
     }
 
-    // Очистка истории
+    // Очистка истории и сброс статистики
     async function resetChat() {
         if (isWaiting) {
             showError('Дождитесь завершения текущего запроса');
             return;
         }
-        if (!confirm('Вы уверены, что хотите очистить всю историю диалога?')) return;
+        if (!confirm('Вы уверены, что хотите очистить всю историю диалога? Статистика токенов будет обнулена.')) return;
         try {
             const response = await fetch('/reset', { method: 'POST' });
             if (!response.ok) throw new Error(`Reset failed: ${response.status}`);
@@ -612,7 +705,16 @@
             selectedFiles = [];
             updateFilePreview();
             document.getElementById('fileInput').value = '';
-            showError('История успешно очищена', 'success');
+            
+            // Обнуляем статистику токенов
+            updateTokenStats({
+                session_total_tokens: 0,
+                last_prompt_tokens: 0,
+                last_completion_tokens: 0,
+                last_total_tokens: 0
+            });
+            
+            showError('История успешно очищена и статистика обнулена', 'success');
         } catch (err) {
             showError(`Ошибка очистки: ${err.message}`);
         }

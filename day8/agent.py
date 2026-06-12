@@ -4,7 +4,7 @@ import logging
 import uuid
 import glob
 import base64
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, Tuple
 import httpx
 from pathlib import Path
 
@@ -33,6 +33,14 @@ class Agent:
         self.history_dir = history_dir
         self.files_dir = files_dir
         self.max_file_size_mb = max_file_size_mb
+        
+        # Счетчик всех токенов за сессию
+        self.total_tokens_used: int = 0
+        
+        # Статистика последнего запроса
+        self.last_prompt_tokens: int = 0
+        self.last_completion_tokens: int = 0
+        self.last_total_tokens: int = 0
         
         # Генерация или использование указанного agent_id
         if agent_id is None:
@@ -90,7 +98,7 @@ class Agent:
         self.save_history(self._history_file_path)
 
     def reset_conversation(self) -> None:
-        """Сброс истории диалога с очисткой JSON файла."""
+        """Сброс истории диалога с очисткой JSON файла и обнулением статистики токенов."""
         # Очищаем файлы агента
         import shutil
         if os.path.exists(self.agent_files_dir):
@@ -98,11 +106,18 @@ class Agent:
             os.makedirs(self.agent_files_dir, exist_ok=True)
         
         self.conversation_history = []
+        
+        # Обнуляем статистику токенов
+        self.total_tokens_used = 0
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
+        self.last_total_tokens = 0
+        
         self._save_to_default_file()
-        self._log("Conversation history reset and files cleared.")
+        self._log("Conversation history reset and files cleared. Token stats reset.")
 
-    async def send_message(self, user_message: str = "", files: Optional[List[Dict]] = None) -> str:
-        """Отправить сообщение LLM, получить ответ (с сохранением истории)."""
+    async def send_message(self, user_message: str = "", files: Optional[List[Dict]] = None) -> Tuple[str, Dict[str, int]]:
+        """Отправить сообщение LLM, получить ответ с статистикой токенов (с сохранением истории)."""
         if files is None:
             files = []
         
@@ -113,7 +128,8 @@ class Agent:
         user_message_obj = {
             "role": "user",
             "content": content,
-            "attachments": [self._get_file_metadata(f) for f in files] if files else []
+            "attachments": [self._get_file_metadata(f) for f in files] if files else [],
+            "tokens": None  # у user нет токенов
         }
         self.conversation_history.append(user_message_obj)
 
@@ -157,7 +173,22 @@ class Agent:
         except (KeyError, IndexError) as e:
             raise Exception(f"Unexpected API response format: {data}")
 
-        self.conversation_history.append({"role": "assistant", "content": assistant_message})
+        # Извлечение статистики токенов из ответа API
+        token_stats = self._extract_token_stats(data)
+        
+        # Обновляем общую статистику
+        self.total_tokens_used += token_stats.get("total_tokens", 0)
+        self.last_prompt_tokens = token_stats.get("prompt_tokens", 0)
+        self.last_completion_tokens = token_stats.get("completion_tokens", 0)
+        self.last_total_tokens = token_stats.get("total_tokens", 0)
+
+        # Сохраняем сообщение ассистента с статистикой токенов
+        assistant_message_obj = {
+            "role": "assistant",
+            "content": assistant_message,
+            "tokens": token_stats
+        }
+        self.conversation_history.append(assistant_message_obj)
         
         # Автоматическое сохранение после изменения истории
         self._save_to_default_file()
@@ -166,8 +197,38 @@ class Agent:
             usage = data['usage']
             self._log(f"Token usage: prompt {usage.get('prompt_tokens',0)}, "
                       f"completion {usage.get('completion_tokens',0)}, total {usage.get('total_tokens',0)}")
+            self._log(f"Session total tokens: {self.total_tokens_used}")
 
-        return assistant_message
+        # Возвращаем ответ и статистику
+        return assistant_message, self.get_token_stats()
+
+    def _extract_token_stats(self, api_response: Dict) -> Dict[str, int]:
+        """Извлечение статистики токенов из ответа API."""
+        usage = api_response.get('usage', {})
+        
+        if usage:
+            return {
+                "prompt_tokens": usage.get('prompt_tokens', 0),
+                "completion_tokens": usage.get('completion_tokens', 0),
+                "total_tokens": usage.get('total_tokens', 0)
+            }
+        else:
+            # Если API не вернул статистику
+            self._log("Warning: No token usage information in API response")
+            return {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0
+            }
+    
+    def get_token_stats(self) -> Dict[str, int]:
+        """Возвращает текущую статистику использования токенов."""
+        return {
+            "session_total_tokens": self.total_tokens_used,
+            "last_prompt_tokens": self.last_prompt_tokens,
+            "last_completion_tokens": self.last_completion_tokens,
+            "last_total_tokens": self.last_total_tokens
+        }
     
     def _prepare_message_content(self, user_message: str, files: List[Dict]) -> Union[str, List[Dict]]:
         """Подготовка контента сообщения в зависимости от наличия файлов и поддержки модели."""
@@ -261,7 +322,7 @@ class Agent:
         }
 
     def save_history(self, filepath: str) -> None:
-        """Сохранить историю в JSON файл."""
+        """Сохранить историю в JSON файл (включая статистику токенов)."""
         # Для сохранения преобразуем пути к файлам в относительные
         history_to_save = []
         for msg in self.conversation_history:
@@ -271,6 +332,9 @@ class Agent:
                     if 'saved_path' in att and att['saved_path']:
                         # Сохраняем относительный путь
                         att['saved_path'] = os.path.relpath(att['saved_path'], self.files_dir)
+            # Убеждаемся, что поле tokens сохраняется
+            if 'tokens' not in msg_copy:
+                msg_copy['tokens'] = None
             history_to_save.append(msg_copy)
         
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -278,7 +342,7 @@ class Agent:
         self._log(f"History saved to {filepath}")
 
     def load_history(self, filepath: str) -> None:
-        """Загрузить историю из JSON файла (если существует)."""
+        """Загрузить историю из JSON файла (если существует) с восстановлением статистики токенов."""
         if os.path.exists(filepath):
             with open(filepath, 'r', encoding='utf-8') as f:
                 loaded_history = json.load(f)
@@ -289,13 +353,26 @@ class Agent:
                     for att in msg['attachments']:
                         if 'saved_path' in att and att['saved_path']:
                             att['saved_path'] = os.path.abspath(os.path.join(self.files_dir, att['saved_path']))
+                # Обеспечиваем наличие поля tokens для старых сохранений
+                if 'tokens' not in msg:
+                    msg['tokens'] = None
             
             self.conversation_history = loaded_history
-            self._log(f"History loaded from {filepath}")
+            
+            # Восстанавливаем общую статистику токенов из истории
+            self.total_tokens_used = 0
+            for msg in self.conversation_history:
+                if msg['role'] == 'assistant' and msg.get('tokens'):
+                    tokens = msg['tokens']
+                    if isinstance(tokens, dict):
+                        self.total_tokens_used += tokens.get('total_tokens', 0)
+            
+            self._log(f"History loaded from {filepath}, restored token stats: {self.total_tokens_used} total tokens")
             self._save_to_default_file()
         else:
             self._log(f"History file {filepath} not found, starting fresh")
             self.conversation_history = []
+            self.total_tokens_used = 0
 
     def get_agent_info(self) -> Dict:
         """Возвращает информацию об агенте."""
@@ -306,7 +383,8 @@ class Agent:
             "history_file_path": self._history_file_path,
             "history_length": len(self.conversation_history),
             "files_dir": self.agent_files_dir,
-            "max_file_size_mb": self.max_file_size_mb
+            "max_file_size_mb": self.max_file_size_mb,
+            "token_stats": self.get_token_stats()  # Добавляем статистику токенов
         }
 
     @staticmethod
@@ -326,15 +404,24 @@ class Agent:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         history = json.load(f)
                         history_length = len(history)
+                        # Подсчет токенов
+                        total_tokens = 0
+                        for msg in history:
+                            if msg.get('role') == 'assistant' and msg.get('tokens'):
+                                tokens = msg['tokens']
+                                if isinstance(tokens, dict):
+                                    total_tokens += tokens.get('total_tokens', 0)
                 except Exception:
                     history_length = 0
+                    total_tokens = 0
                 
                 agents_info.append({
                     "filename": filename,
                     "agent_id": agent_id,
                     "model": model,
                     "history_file_path": filepath,
-                    "history_length": history_length
+                    "history_length": history_length,
+                    "total_tokens": total_tokens
                 })
         
         return agents_info

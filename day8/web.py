@@ -129,6 +129,7 @@ class MessageRequest(BaseModel):
 class SendResponse(BaseModel):
     assistant_reply: str
     history: list
+    token_stats: dict
 
 # ------------------------------------------------------------
 # Эндпоинты API
@@ -152,6 +153,10 @@ async def get_history():
             "role": msg.get("role", "unknown"),
             "content": msg.get("content", "")
         }
+        
+        # Добавляем информацию о токенах для сообщений ассистента
+        if msg.get("role") == "assistant" and msg.get("tokens"):
+            formatted_msg["tokens"] = msg["tokens"]
         
         # Добавляем информацию о вложениях для пользовательских сообщений
         if msg.get("role") == "user" and "attachments" in msg and msg["attachments"]:
@@ -183,6 +188,13 @@ async def get_history():
         formatted_history.append(formatted_msg)
     
     return {"history": formatted_history}
+
+@app.get("/stats")
+async def get_token_stats():
+    """Вернуть текущую статистику использования токенов"""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    return agent.get_token_stats()
 
 @app.post("/send")
 async def send_message(
@@ -265,12 +277,12 @@ async def send_message(
                 processed_files.append(file_info)
         
         # Отправляем сообщение агенту
-        # Убеждаемся, что message - это строка
         user_message = message if message else ""
         
         logger.info(f"Sending to agent: message='{user_message}', files={len(processed_files)}")
         
-        assistant_reply = await agent.send_message(
+        # Получаем ответ и статистику токенов
+        assistant_reply, token_stats = await agent.send_message(
             user_message=user_message,
             files=processed_files if processed_files else None
         )
@@ -282,6 +294,11 @@ async def send_message(
                 "role": msg.get("role", "unknown"),
                 "content": msg.get("content", "")
             }
+            
+            # Добавляем информацию о токенах
+            if msg.get("role") == "assistant" and msg.get("tokens"):
+                formatted_msg["tokens"] = msg["tokens"]
+            
             if msg.get("role") == "user" and "attachments" in msg and msg["attachments"]:
                 formatted_msg["attachments"] = []
                 for att in msg["attachments"]:
@@ -302,7 +319,8 @@ async def send_message(
         
         return SendResponse(
             assistant_reply=assistant_reply,
-            history=formatted_history
+            history=formatted_history,
+            token_stats=token_stats
         )
         
     except HTTPException:
@@ -313,12 +331,12 @@ async def send_message(
 
 @app.post("/reset")
 async def reset_conversation():
-    """Очистить историю диалога и удалить файлы"""
+    """Очистить историю диалога, удалить файлы и обнулить статистику токенов"""
     if agent is None:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     try:
         agent.reset_conversation()
-        return {"status": "ok", "message": "History cleared"}
+        return {"status": "ok", "message": "History cleared and token stats reset"}
     except Exception as e:
         logger.error(f"Error in /reset: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Reset error: {str(e)}")
