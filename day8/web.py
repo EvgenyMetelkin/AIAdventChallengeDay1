@@ -119,6 +119,9 @@ app = FastAPI(lifespan=lifespan)
 if os.path.exists(FILES_DIR):
     app.mount("/files", StaticFiles(directory=FILES_DIR), name="files")
 
+# Монтируем статические файлы из корневой директории (для chat.js)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 templates = Jinja2Templates(directory="templates")
 
 # Pydantic модели
