@@ -2,6 +2,7 @@
 let isWaiting = false;
 let selectedFiles = [];
 let typingElement = null;
+let currentStrategy = "summary";
 
 // ======================== Вспомогательные функции ========================
 function escapeHtml(str) {
@@ -41,12 +42,10 @@ function showError(msg, type = 'error') {
 // ======================== Статистика токенов ========================
 function updateTokenStats(stats) {
     if (!stats) return;
-    // Полная статистика
     document.getElementById('prompt-tokens').textContent = stats.last_prompt_tokens || 0;
     document.getElementById('completion-tokens').textContent = stats.last_completion_tokens || 0;
     document.getElementById('last-total').textContent = stats.last_total_tokens || 0;
     document.getElementById('session-tokens').textContent = stats.session_total_tokens || 0;
-    // Мини-версия
     const miniSpan = document.getElementById('session-tokens-mini');
     if (miniSpan) miniSpan.textContent = stats.session_total_tokens || 0;
 }
@@ -63,7 +62,7 @@ async function loadTokenStats() {
     }
 }
 
-// ======================== Статистика контекста (суммаризации) ========================
+// ======================== Статистика контекста ========================
 async function loadContextStats() {
     try {
         const response = await fetch('/context-stats');
@@ -81,58 +80,250 @@ function updateContextStats(stats) {
     
     const summaryIndicator = document.getElementById('summaryIndicator');
     const summaryCountSpan = document.getElementById('summaryCount');
+    const strategyInfoSpan = document.getElementById('strategyInfo');
     
     if (summaryCountSpan) {
-        const summaryText = `${stats.num_summaries} суммар. (посл. ${stats.recent_messages}/${stats.keep_last_n})`;
-        summaryCountSpan.textContent = summaryText;
-        
-        // Меняем стиль в зависимости от наличия суммаризаций
-        if (stats.num_summaries > 0) {
-            summaryCountSpan.parentElement.style.background = 'rgba(255,215,0,0.3)';
-            summaryCountSpan.parentElement.title = `Суммаризировано ${stats.num_summaries} блоков истории. Всего сообщений: ${stats.total_messages}. Интервал суммаризации: ${stats.summary_interval}`;
-        } else {
-            summaryCountSpan.parentElement.style.background = 'rgba(255,255,255,0.15)';
-            summaryCountSpan.parentElement.title = 'Пока нет суммаризированных блоков. Старые сообщения будут автоматически суммаризироваться.';
+        if (stats.strategy === 'summary') {
+            summaryCountSpan.textContent = `${stats.num_summaries} суммар. (посл. ${stats.recent_messages}/${stats.keep_last_n})`;
+            summaryCountSpan.parentElement.style.background = stats.num_summaries > 0 ? 'rgba(255,215,0,0.3)' : 'rgba(255,255,255,0.15)';
+        } else if (stats.strategy === 'sliding_window') {
+            summaryCountSpan.textContent = `Окно: ${stats.current_window_size}/${stats.max_window_size}`;
+            summaryCountSpan.parentElement.style.background = 'rgba(100,200,255,0.3)';
+        } else if (stats.strategy === 'sticky_facts') {
+            summaryCountSpan.textContent = `Фактов: ${stats.num_facts}`;
+            summaryCountSpan.parentElement.style.background = 'rgba(100,255,100,0.3)';
+        } else if (stats.strategy === 'branching') {
+            summaryCountSpan.textContent = `Ветка: ${stats.current_branch} (${stats.total_branches} всего)`;
+            summaryCountSpan.parentElement.style.background = 'rgba(255,200,100,0.3)';
         }
     }
     
-    if (summaryIndicator) {
-        // Обновляем тайтл с детальной информацией
-        summaryIndicator.title = `📊 Статистика контекста:\n` +
-            `• Всего сообщений: ${stats.total_messages}\n` +
-            `• Суммаризаций: ${stats.num_summaries}\n` +
-            `• Храним последних: ${stats.keep_last_n}\n` +
-            `• Интервал суммаризации: ${stats.summary_interval}\n` +
-            `• Актуальных сообщений: ${stats.recent_messages}\n` +
-            `• Суммаризировано сообщений: ${stats.summarized_messages}`;
+    if (strategyInfoSpan) {
+        let infoText = `Стратегия: ${stats.strategy}`;
+        if (stats.strategy === 'sticky_facts' && stats.facts && Object.keys(stats.facts).length > 0) {
+            infoText += ` | Факты: ${JSON.stringify(stats.facts).substring(0, 100)}`;
+        }
+        strategyInfoSpan.textContent = infoText;
+    }
+    
+    // Обновляем UI для веток, если стратегия branching
+    if (stats.strategy === 'branching') {
+        updateBranchUI(stats.branches, stats.current_branch);
     }
 }
 
-// ======================== Сворачиваемый блок статистики ========================
-function initCollapsibleStats() {
-    const container = document.getElementById('statsCollapsible');
-    const toggleBtn = document.getElementById('statsToggle');
-    if (!container || !toggleBtn) return;
-    
-    // Восстановление состояния из localStorage
-    const isCollapsed = localStorage.getItem('statsCollapsed') === 'true';
-    if (isCollapsed) {
-        container.classList.add('collapsed');
-        toggleBtn.textContent = '📈';
-    } else {
-        container.classList.remove('collapsed');
-        toggleBtn.textContent = '📊';
+// ======================== Управление стратегией ========================
+async function loadCurrentStrategy() {
+    try {
+        const response = await fetch('/context-strategy');
+        if (response.ok) {
+            const data = await response.json();
+            currentStrategy = data.current_strategy;
+            const strategySelect = document.getElementById('strategySelect');
+            if (strategySelect) {
+                strategySelect.value = currentStrategy;
+            }
+            updateUIForStrategy(currentStrategy);
+        }
+    } catch (err) {
+        console.warn('Could not load current strategy:', err);
+    }
+}
+
+async function changeStrategy(strategy) {
+    if (isWaiting) {
+        showError('Дождитесь завершения текущего запроса');
+        return false;
     }
     
-    toggleBtn.addEventListener('click', () => {
-        const nowCollapsed = container.classList.toggle('collapsed');
-        localStorage.setItem('statsCollapsed', nowCollapsed);
-        toggleBtn.textContent = nowCollapsed ? '📈' : '📊';
-    });
+    try {
+        const response = await fetch('/context-strategy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ strategy: strategy })
+        });
+        
+        if (response.ok) {
+            currentStrategy = strategy;
+            showError(`Стратегия изменена на: ${strategy}`, 'success');
+            updateUIForStrategy(strategy);
+            await loadContextStats();
+            await loadHistory();
+            return true;
+        } else {
+            const error = await response.json();
+            showError(`Ошибка: ${error.detail}`);
+            return false;
+        }
+    } catch (err) {
+        showError(`Ошибка: ${err.message}`);
+        return false;
+    }
+}
+
+function updateUIForStrategy(strategy) {
+    const branchControls = document.getElementById('branchControls');
+    const factsInfo = document.getElementById('factsInfo');
+    
+    if (branchControls) {
+        branchControls.style.display = strategy === 'branching' ? 'flex' : 'none';
+    }
+    
+    if (factsInfo) {
+        factsInfo.style.display = strategy === 'sticky_facts' ? 'block' : 'none';
+    }
+}
+
+// ======================== Управление ветками ========================
+async function saveBranch() {
+    const branchName = document.getElementById('newBranchName').value.trim();
+    if (!branchName) {
+        showError('Введите имя ветки');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/branch/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: branchName })
+        });
+        
+        if (response.ok) {
+            showError(`Ветка "${branchName}" сохранена`, 'success');
+            document.getElementById('newBranchName').value = '';
+            await loadBranches();
+        } else {
+            const error = await response.json();
+            showError(`Ошибка: ${error.detail}`);
+        }
+    } catch (err) {
+        showError(`Ошибка: ${err.message}`);
+    }
+}
+
+async function switchBranch(branchName) {
+    if (isWaiting) {
+        showError('Дождитесь завершения текущего запроса');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/branch/switch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: branchName })
+        });
+        
+        if (response.ok) {
+            showError(`Переключено на ветку "${branchName}"`, 'success');
+            await loadHistory();
+            await loadContextStats();
+            await loadTokenStats();
+        } else {
+            const error = await response.json();
+            showError(`Ошибка: ${error.detail}`);
+        }
+    } catch (err) {
+        showError(`Ошибка: ${err.message}`);
+    }
+}
+
+async function deleteBranch(branchName) {
+    if (branchName === currentBranch) {
+        showError('Нельзя удалить текущую ветку');
+        return;
+    }
+    
+    if (!confirm(`Удалить ветку "${branchName}"?`)) return;
+    
+    try {
+        const response = await fetch(`/branch/${encodeURIComponent(branchName)}`, {
+            method: 'DELETE'
+        });
+        
+        if (response.ok) {
+            showError(`Ветка "${branchName}" удалена`, 'success');
+            await loadBranches();
+        } else {
+            const error = await response.json();
+            showError(`Ошибка: ${error.detail}`);
+        }
+    } catch (err) {
+        showError(`Ошибка: ${err.message}`);
+    }
+}
+
+async function loadBranches() {
+    try {
+        const response = await fetch('/branch/list');
+        if (response.ok) {
+            const data = await response.json();
+            currentBranch = data.current_branch;
+            updateBranchSelect(data.branches, data.current_branch);
+        }
+    } catch (err) {
+        console.warn('Could not load branches:', err);
+    }
+}
+
+function updateBranchSelect(branches, currentBranchName) {
+    const select = document.getElementById('branchSelect');
+    if (!select) return;
+    
+    select.innerHTML = '<option value="">Выбрать ветку...</option>';
+    for (const branch of branches) {
+        const option = document.createElement('option');
+        option.value = branch;
+        option.textContent = branch + (branch === currentBranchName ? ' (текущая)' : '');
+        if (branch === currentBranchName) option.selected = true;
+        select.appendChild(option);
+    }
+}
+
+function updateBranchUI(branches, currentBranchName) {
+    const branchList = document.getElementById('branchList');
+    if (!branchList) return;
+    
+    branchList.innerHTML = '';
+    for (const branch of branches) {
+        const item = document.createElement('div');
+        item.style.padding = '4px';
+        item.style.margin = '2px 0';
+        item.style.display = 'flex';
+        item.style.justifyContent = 'space-between';
+        item.style.alignItems = 'center';
+        
+        const nameSpan = document.createElement('span');
+        nameSpan.textContent = branch + (branch === currentBranchName ? ' ✓' : '');
+        nameSpan.style.fontWeight = branch === currentBranchName ? 'bold' : 'normal';
+        
+        const deleteBtn = document.createElement('button');
+        deleteBtn.textContent = '✖';
+        deleteBtn.style.background = '#dc3545';
+        deleteBtn.style.padding = '2px 8px';
+        deleteBtn.style.fontSize = '12px';
+        deleteBtn.onclick = () => deleteBranch(branch);
+        
+        if (branch !== currentBranchName) {
+            const switchBtn = document.createElement('button');
+            switchBtn.textContent = 'Переключить';
+            switchBtn.style.background = '#2c3e66';
+            switchBtn.style.padding = '2px 8px';
+            switchBtn.style.fontSize = '12px';
+            switchBtn.style.marginRight = '5px';
+            switchBtn.onclick = () => switchBranch(branch);
+            item.appendChild(switchBtn);
+        }
+        
+        item.appendChild(nameSpan);
+        item.appendChild(deleteBtn);
+        branchList.appendChild(item);
+    }
 }
 
 // ======================== Отображение сообщений ========================
-function appendMessageToDOM(role, content, scroll = true, attachments = null, tokens = null, isSummarized = false) {
+function appendMessageToDOM(role, content, scroll = true, attachments = null, tokens = null) {
     const container = document.getElementById('chatMessages');
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
@@ -167,11 +358,6 @@ function appendMessageToDOM(role, content, scroll = true, attachments = null, to
         tokenInfoHtml = `<div class="token-info">📊 Токены: prompt: ${tokens.prompt_tokens || 0} | completion: ${tokens.completion_tokens || 0} | total: ${tokens.total_tokens || 0}</div>`;
     }
     
-    let summarizedBadge = '';
-    if (isSummarized) {
-        summarizedBadge = `<span class="summarized-badge" title="Это сообщение было суммаризировано и заменено кратким изложением">📋 Суммаризировано</span>`;
-    }
-    
     const safeContent = escapeHtml(content);
     messageDiv.innerHTML = `
         <div class="message-bubble">${safeContent || ''}</div>
@@ -179,7 +365,6 @@ function appendMessageToDOM(role, content, scroll = true, attachments = null, to
         ${tokenInfoHtml}
         <div class="message-meta">
             ${role === 'user' ? '👤 Вы' : '🤖 Ассистент'} · ${new Date().toLocaleTimeString()}
-            ${summarizedBadge}
         </div>
     `;
     container.appendChild(messageDiv);
@@ -204,28 +389,6 @@ function renderMessages(history) {
         }
     }
     scrollToBottom();
-}
-
-// Отображение баннера с информацией о суммаризации
-function showSummarizationBanner(numSummaries, totalMessagesSummarized) {
-    const container = document.getElementById('chatMessages');
-    const banner = document.createElement('div');
-    banner.className = 'message system-summary';
-    banner.style.margin = '8px 0';
-    banner.style.textAlign = 'center';
-    banner.innerHTML = `
-        <div style="background: #e8f4f8; border-radius: 16px; padding: 8px 16px; font-size: 0.8rem; color: #2c3e66; display: inline-block; max-width: 90%;">
-            📋 <strong>Управление контекстом</strong>: ${numSummaries} блок(ов) истории суммаризировано (${totalMessagesSummarized} сообщений). 
-            Последние сообщения сохранены полностью.
-        </div>
-    `;
-    container.appendChild(banner);
-    scrollToBottom();
-    
-    // Автоматически скрываем через 5 секунд
-    setTimeout(() => {
-        if (banner.parentNode) banner.remove();
-    }, 5000);
 }
 
 // ======================== Работа с файлами ========================
@@ -301,22 +464,13 @@ function hideTypingIndicator() {
     }
 }
 
-// ======================== Загрузка истории и информации об агенте ========================
+// ======================== Загрузка истории ========================
 async function loadHistory() {
     try {
         const response = await fetch('/history');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         renderMessages(data.history);
-        
-        // Проверяем наличие суммаризаций
-        if (data.summaries && data.summaries.length > 0) {
-            // Показываем баннер при загрузке, если есть суммаризации
-            const totalMessages = data.history?.length || 0;
-            // Примерное количество суммаризированных сообщений (может быть неточно, но для индикации)
-            const approxSummarized = data.summaries.length * 10; // приблизительно
-            showSummarizationBanner(data.summaries.length, approxSummarized);
-        }
     } catch (err) {
         console.error('Ошибка загрузки истории:', err);
         showError('Не удалось загрузить историю чата');
@@ -329,11 +483,7 @@ async function loadHistory() {
             const agentIdSpan = document.getElementById('agentIdLabel');
             if (agentIdSpan) {
                 const visionSupport = info.supports_vision ? '🔮' : '📝';
-                let contextInfo = '';
-                if (info.context_stats) {
-                    contextInfo = ` | контекст: ${info.context_stats.keep_last_n} посл., ${info.context_stats.num_summaries} суммар.`;
-                }
-                agentIdSpan.textContent = `ID: ${info.agent_id} ${visionSupport}${contextInfo}`;
+                agentIdSpan.textContent = `ID: ${info.agent_id} ${visionSupport}`;
             }
             if (info.token_stats) {
                 updateTokenStats(info.token_stats);
@@ -343,6 +493,8 @@ async function loadHistory() {
     
     await loadTokenStats();
     await loadContextStats();
+    await loadCurrentStrategy();
+    await loadBranches();
 }
 
 // ======================== Отправка сообщения ========================
@@ -409,21 +561,8 @@ async function sendMessage() {
         
         renderMessages(data.history);
         
-        // Обновляем статистику контекста после отправки
-        await loadContextStats();
-        
-        // Проверяем, не произошла ли суммаризация
-        const contextStats = await fetch('/context-stats').then(r => r.json()).catch(() => null);
-        if (contextStats && contextStats.num_summaries > 0) {
-            // Показываем уведомление о суммаризации, но не спамим
-            const lastSummaryTime = localStorage.getItem('lastSummaryNotification');
-            const now = Date.now();
-            if (!lastSummaryTime || now - parseInt(lastSummaryTime) > 30000) { // не чаще раза в 30 секунд
-                localStorage.setItem('lastSummaryNotification', now);
-                if (contextStats.num_summaries > 0) {
-                    showError(`📋 Управление контекстом: ${contextStats.num_summaries} блок(ов) истории суммаризировано`, 'info');
-                }
-            }
+        if (data.context_stats) {
+            updateContextStats(data.context_stats);
         }
         
     } catch (err) {
@@ -451,7 +590,7 @@ async function resetChat() {
         showError('Дождитесь завершения текущего запроса');
         return;
     }
-    if (!confirm('Вы уверены, что хотите очистить всю историю диалога? Статистика токенов будет обнулена, все суммаризации будут удалены.')) return;
+    if (!confirm('Вы уверены, что хотите очистить всю историю диалога?')) return;
     try {
         const response = await fetch('/reset', { method: 'POST' });
         if (!response.ok) throw new Error(`Reset failed: ${response.status}`);
@@ -468,20 +607,16 @@ async function resetChat() {
             last_total_tokens: 0
         });
         
-        // Обновляем индикатор суммаризаций
-        const summaryCountSpan = document.getElementById('summaryCount');
-        if (summaryCountSpan) {
-            summaryCountSpan.textContent = '0 суммар. (посл. 0/0)';
-            summaryCountSpan.parentElement.style.background = 'rgba(255,255,255,0.15)';
-        }
+        await loadContextStats();
+        await loadBranches();
         
-        showError('История успешно очищена и статистика обнулена', 'success');
+        showError('История успешно очищена', 'success');
     } catch (err) {
         showError(`Ошибка очистки: ${err.message}`);
     }
 }
 
-// ======================== Периодическое обновление статистики ========================
+// ======================== Периодическое обновление ========================
 let refreshInterval = null;
 
 function startPeriodicRefresh() {
@@ -490,8 +625,11 @@ function startPeriodicRefresh() {
         if (document.hasFocus()) {
             loadContextStats();
             loadTokenStats();
+            if (currentStrategy === 'branching') {
+                loadBranches();
+            }
         }
-    }, 15000); // Обновляем каждые 15 секунд
+    }, 15000);
 }
 
 function stopPeriodicRefresh() {
@@ -499,6 +637,28 @@ function stopPeriodicRefresh() {
         clearInterval(refreshInterval);
         refreshInterval = null;
     }
+}
+
+// ======================== Сворачиваемая статистика ========================
+function initCollapsibleStats() {
+    const container = document.getElementById('statsCollapsible');
+    const toggleBtn = document.getElementById('statsToggle');
+    if (!container || !toggleBtn) return;
+    
+    const isCollapsed = localStorage.getItem('statsCollapsed') === 'true';
+    if (isCollapsed) {
+        container.classList.add('collapsed');
+        toggleBtn.textContent = '📈';
+    } else {
+        container.classList.remove('collapsed');
+        toggleBtn.textContent = '📊';
+    }
+    
+    toggleBtn.addEventListener('click', () => {
+        const nowCollapsed = container.classList.toggle('collapsed');
+        localStorage.setItem('statsCollapsed', nowCollapsed);
+        toggleBtn.textContent = nowCollapsed ? '📈' : '📊';
+    });
 }
 
 // ======================== Инициализация ========================
@@ -509,52 +669,68 @@ function init() {
     const fileBtn = document.getElementById('fileBtn');
     const fileInput = document.getElementById('fileInput');
     const messageInput = document.getElementById('messageInput');
+    const strategySelect = document.getElementById('strategySelect');
+    const saveBranchBtn = document.getElementById('saveBranchBtn');
+    const branchSelect = document.getElementById('branchSelect');
     
-    // Обработчики
-    sendBtn.addEventListener('click', sendMessage);
-    resetBtn.addEventListener('click', resetChat);
-    fileBtn.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', (e) => {
-        const files = Array.from(e.target.files);
-        const maxSizeMB = 10;
-        for (const file of files) {
-            if (file.size > maxSizeMB * 1024 * 1024) {
-                showError(`Файл ${file.name} превышает ${maxSizeMB}MB`);
-                continue;
+    if (sendBtn) sendBtn.addEventListener('click', sendMessage);
+    if (resetBtn) resetBtn.addEventListener('click', resetChat);
+    if (fileBtn) fileBtn.addEventListener('click', () => fileInput.click());
+    if (fileInput) {
+        fileInput.addEventListener('change', (e) => {
+            const files = Array.from(e.target.files);
+            const maxSizeMB = 10;
+            for (const file of files) {
+                if (file.size > maxSizeMB * 1024 * 1024) {
+                    showError(`Файл ${file.name} превышает ${maxSizeMB}MB`);
+                    continue;
+                }
+                selectedFiles.push(file);
             }
-            selectedFiles.push(file);
-        }
-        updateFilePreview();
-    });
+            updateFilePreview();
+        });
+    }
     
-    // Авто-расширение textarea
-    messageInput.addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = Math.min(this.scrollHeight, 150) + 'px';
-    });
+    if (messageInput) {
+        messageInput.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+        });
+        
+        messageInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+    }
     
-    // Отправка по Enter (без Shift)
-    messageInput.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-        }
-    });
+    if (strategySelect) {
+        strategySelect.addEventListener('change', (e) => {
+            changeStrategy(e.target.value);
+        });
+    }
     
-    // Инициализация сворачиваемой статистики
+    if (saveBranchBtn) {
+        saveBranchBtn.addEventListener('click', saveBranch);
+    }
+    
+    if (branchSelect) {
+        branchSelect.addEventListener('change', (e) => {
+            if (e.target.value) {
+                switchBranch(e.target.value);
+                branchSelect.value = '';
+            }
+        });
+    }
+    
     initCollapsibleStats();
-    
-    // Загрузка данных
     loadHistory();
-    
-    // Запуск периодического обновления
     startPeriodicRefresh();
 }
 
-// Очистка интервала при выгрузке страницы
 window.addEventListener('beforeunload', () => {
     stopPeriodicRefresh();
 });
 
-// Запуск при загрузке страницы
 document.addEventListener('DOMContentLoaded', init);

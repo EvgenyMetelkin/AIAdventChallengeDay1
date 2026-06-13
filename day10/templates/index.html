@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>LLM Agent Chat с поддержкой файлов и умным контекстом</title>
+    <title>LLM Agent Chat - Умное управление контекстом</title>
     <style>
         * {
             box-sizing: border-box;
@@ -19,7 +19,7 @@
             align-items: center;
         }
         .chat-container {
-            max-width: 900px;
+            max-width: 1200px;
             width: 100%;
             height: 90vh;
             background: white;
@@ -41,7 +41,7 @@
         }
         .header-left {
             display: flex;
-            align-items: baseline;
+            align-items: center;
             gap: 12px;
             flex-wrap: wrap;
         }
@@ -58,7 +58,6 @@
             font-family: monospace;
         }
         
-        /* Сворачиваемая статистика в шапке */
         .stats-collapsible {
             display: flex;
             align-items: center;
@@ -120,11 +119,7 @@
             align-items: center;
             gap: 6px;
         }
-        .stat-label {
-            font-weight: 600;
-        }
         
-        /* Индикатор суммаризации */
         .summary-indicator {
             background: rgba(255,255,255,0.15);
             border-radius: 40px;
@@ -135,8 +130,64 @@
             gap: 6px;
             cursor: help;
         }
-        .summary-indicator:hover {
-            background: rgba(255,255,255,0.25);
+        
+        .strategy-info {
+            font-size: 0.7rem;
+            background: rgba(0,0,0,0.2);
+            padding: 4px 8px;
+            border-radius: 40px;
+        }
+        
+        .control-panel {
+            background: #e8eaef;
+            padding: 10px 20px;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: center;
+            border-bottom: 1px solid #ddd;
+        }
+        
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: white;
+            padding: 5px 12px;
+            border-radius: 8px;
+        }
+        
+        .control-group label {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #2c3e66;
+        }
+        
+        select, input {
+            padding: 5px 10px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            font-size: 0.85rem;
+        }
+        
+        button.small-btn {
+            padding: 5px 12px;
+            font-size: 0.8rem;
+            background: #2c3e66;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+        
+        button.small-btn:hover {
+            background: #1e2a4a;
+        }
+        
+        .branch-list {
+            max-height: 100px;
+            overflow-y: auto;
+            font-size: 0.75rem;
         }
         
         .chat-messages {
@@ -194,9 +245,6 @@
             margin-left: 12px;
             font-family: 'Courier New', monospace;
         }
-        .assistant .token-info {
-            color: #6c757d;
-        }
         .attachments {
             margin-top: 8px;
             display: flex;
@@ -217,32 +265,6 @@
             max-height: 100px;
             border-radius: 4px;
             cursor: pointer;
-        }
-        .attachment .file-icon {
-            width: 32px;
-            height: 32px;
-            background: #6c757d;
-            border-radius: 4px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            font-size: 18px;
-        }
-        .attachment .file-info {
-            display: flex;
-            flex-direction: column;
-        }
-        .attachment .filename {
-            font-weight: 500;
-            max-width: 150px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .attachment .file-size {
-            font-size: 0.7rem;
-            color: #6c757d;
         }
         .file-preview-area {
             margin-top: 8px;
@@ -301,8 +323,6 @@
             display: inline-block;
             animation: blink 1.3s infinite;
         }
-        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
-        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
         @keyframes blink {
             0%, 60%, 100% { opacity: 0.3; transform: translateY(0);}
             30% { opacity: 1; transform: translateY(-4px);}
@@ -362,9 +382,6 @@
             background: #6c757d;
             padding: 12px 16px;
         }
-        .file-btn:hover {
-            background: #5a6268;
-        }
         .reset-btn {
             background: #d9534f;
         }
@@ -388,9 +405,8 @@
         @media (max-width: 600px) {
             .message { max-width: 95%; }
             .chat-container { height: 95vh; }
-            button { padding: 10px 16px; }
-            .stats-full { gap: 6px; }
-            .stats-full span { padding: 2px 6px; font-size: 0.7rem; }
+            .control-panel { flex-direction: column; align-items: stretch; }
+            .control-group { justify-content: space-between; }
         }
     </style>
 </head>
@@ -398,34 +414,64 @@
 <div class="chat-container">
     <div class="chat-header">
         <div class="header-left">
-            <h1>🤖 LLM Agent (умный контекст)</h1>
+            <h1>🤖 LLM Agent</h1>
             <span class="agent-id" id="agentIdLabel">загрузка...</span>
-            <div class="summary-indicator" id="summaryIndicator" title="Информация о суммаризации истории">
-                📋 <span id="summaryCount">0</span> суммаризаций
+            <div class="summary-indicator" id="summaryIndicator" title="Информация о контексте">
+                📊 <span id="summaryCount">0</span>
             </div>
         </div>
         
-        <!-- Сворачиваемый блок статистики -->
         <div class="stats-collapsible" id="statsCollapsible">
             <button class="stats-toggle" id="statsToggle" title="Свернуть/развернуть">📊</button>
             <div class="stats-full" id="statsFull">
-                <span>📤 <span class="stat-label">Токенов в запросе:</span> <span class="stat-value" id="prompt-tokens">0</span></span>
-                <span>💬 <span class="stat-label">Токенов в ответе:</span> <span class="stat-value" id="completion-tokens">0</span></span>
-                <span>📊 <span class="stat-label">Токенов в запросе (всего):</span> <span class="stat-value" id="last-total">0</span></span>
-                <span>🔁 <span class="stat-label">Всего за сессию:</span> <span class="stat-value" id="session-tokens">0</span></span>
+                <span>📤 <span class="stat-label">prompt:</span> <span id="prompt-tokens">0</span></span>
+                <span>💬 <span class="stat-label">completion:</span> <span id="completion-tokens">0</span></span>
+                <span>📊 <span class="stat-label">last total:</span> <span id="last-total">0</span></span>
+                <span>🔁 <span class="stat-label">session:</span> <span id="session-tokens">0</span></span>
             </div>
             <div class="stats-mini" id="statsMini">
-                <span>📊 <span class="stat-label">Сессия:</span> <span id="session-tokens-mini">0</span></span>
+                <span>📊 <span class="stat-label">сессия:</span> <span id="session-tokens-mini">0</span></span>
             </div>
+        </div>
+    </div>
+    
+    <div class="control-panel">
+        <div class="control-group">
+            <label>🎯 Стратегия:</label>
+            <select id="strategySelect">
+                <option value="summary">Summary (суммаризация)</option>
+                <option value="sliding_window">Sliding Window</option>
+                <option value="sticky_facts">Sticky Facts</option>
+                <option value="branching">Branching</option>
+            </select>
+        </div>
+        
+        <div id="branchControls" style="display: none; gap: 8px; align-items: center;">
+            <div class="control-group">
+                <label>📁 Ветки:</label>
+                <select id="branchSelect">
+                    <option value="">Выбрать...</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <input type="text" id="newBranchName" placeholder="Имя новой ветки" size="15">
+                <button class="small-btn" id="saveBranchBtn">Сохранить</button>
+            </div>
+            <div id="branchList" class="branch-list"></div>
+        </div>
+        
+        <div id="factsInfo" style="display: none;" class="strategy-info">
+            📝 <span id="strategyInfo"></span>
         </div>
     </div>
     
     <div class="chat-messages" id="chatMessages">
         <div class="message assistant">
-            <div class="message-bubble">Добро пожаловать! Отправьте сообщение или прикрепите файлы (изображения, PDF, DOCX, TXT).</div>
-            <div class="message-meta">✨ Поддерживается умное управление контекстом — старые сообщения автоматически суммаризируются</div>
+            <div class="message-bubble">Добро пожаловать! Выберите стратегию управления контекстом и начните диалог.</div>
+            <div class="message-meta">✨ Доступны: Summary, Sliding Window, Sticky Facts, Branching</div>
         </div>
     </div>
+    
     <div class="input-area">
         <div id="filePreviewArea" class="file-preview-area" style="display: none;"></div>
         <div class="input-controls">

@@ -38,6 +38,7 @@ FILES_DIR = os.getenv("FILES_DIR", "agent_files")
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "10"))
 KEEP_LAST_N_MESSAGES = int(os.getenv("KEEP_LAST_N_MESSAGES", "10"))
 SUMMARY_INTERVAL = int(os.getenv("SUMMARY_INTERVAL", "10"))
+CONTEXT_STRATEGY = os.getenv("CONTEXT_STRATEGY", "summary")
 ALLOWED_EXTENSIONS = os.getenv("ALLOWED_EXTENSIONS", "txt,md,py,json,yaml,yml,toml,ini,cfg,conf,log,csv,tsv,xml,html,htm,css,js,jsx,ts,tsx,rst,tex,sh,bat,ps1,sql,r,jl,go,rs,swift,kt,java,c,cpp,h,hpp,cs,php,rb,pl,lua,scala,clj,cljs,groovy,gradle,dockerfile,makefile").split(',')
 
 if not LLM_API_KEY:
@@ -55,7 +56,7 @@ def extract_text_from_pdf(file_content: bytes) -> str:
             page_text = page.extract_text()
             if page_text:
                 text += page_text
-        return text[:5000]  # Ограничиваем длину
+        return text[:5000]
     except Exception as e:
         logger.error(f"Error extracting PDF text: {str(e)}")
         return f"[Ошибка извлечения текста из PDF: {str(e)}]"
@@ -65,7 +66,7 @@ def extract_text_from_docx(file_content: bytes) -> str:
     try:
         doc = docx.Document(BytesIO(file_content))
         text = "\n".join([paragraph.text for paragraph in doc.paragraphs if paragraph.text])
-        return text[:5000]  # Ограничиваем длину
+        return text[:5000]
     except Exception as e:
         logger.error(f"Error extracting DOCX text: {str(e)}")
         return f"[Ошибка извлечения текста из DOCX: {str(e)}]"
@@ -74,7 +75,7 @@ def extract_text_from_txt(file_content: bytes) -> str:
     """Извлечение текста из TXT файла."""
     try:
         text = file_content.decode('utf-8')
-        return text[:5000]  # Ограничиваем длину
+        return text[:5000]
     except UnicodeDecodeError:
         try:
             text = file_content.decode('cp1251')
@@ -86,7 +87,6 @@ def process_image_for_preview(file_content: bytes, filename: str, files_dir: str
     """Создание превью для изображения и сохранение."""
     try:
         img = Image.open(BytesIO(file_content))
-        # Создаем миниатюру
         img.thumbnail((200, 200))
         preview_filename = f"preview_{uuid.uuid4().hex}_{filename}"
         preview_path = os.path.join(files_dir, preview_filename)
@@ -111,20 +111,20 @@ async def lifespan(app: FastAPI):
         files_dir=FILES_DIR,
         max_file_size_mb=MAX_FILE_SIZE_MB,
         keep_last_n_messages=KEEP_LAST_N_MESSAGES,
-        summary_interval=SUMMARY_INTERVAL
+        summary_interval=SUMMARY_INTERVAL,
+        context_strategy=CONTEXT_STRATEGY
     )
     logger.info(f"Agent initialized with ID: {agent.agent_id}, supports_vision: {agent.supports_vision}")
-    logger.info(f"Context management: keep_last_n={KEEP_LAST_N_MESSAGES}, summary_interval={SUMMARY_INTERVAL}")
+    logger.info(f"Context management: strategy={CONTEXT_STRATEGY}, keep_last_n={KEEP_LAST_N_MESSAGES}")
     yield
     logger.info("Shutting down, history saved automatically")
 
 app = FastAPI(lifespan=lifespan)
 
-# Монтируем статические файлы для доступа к загруженным файлам
+# Монтируем статические файлы
 if os.path.exists(FILES_DIR):
     app.mount("/files", StaticFiles(directory=FILES_DIR), name="files")
 
-# Монтируем статические файлы из корневой директории (для chat.js)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 templates = Jinja2Templates(directory="templates")
@@ -138,6 +138,13 @@ class SendResponse(BaseModel):
     assistant_reply: str
     history: list
     token_stats: dict
+    context_stats: dict
+
+class StrategyRequest(BaseModel):
+    strategy: str
+
+class BranchRequest(BaseModel):
+    name: str
 
 # ------------------------------------------------------------
 # Эндпоинты API
@@ -150,11 +157,10 @@ async def get_index(request: Request):
 
 @app.get("/history")
 async def get_history():
-    """Вернуть текущую историю диалога с обработкой вложений"""
+    """Вернуть текущую историю диалога"""
     if agent is None:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     
-    # Форматируем историю для фронтенда
     formatted_history = []
     for msg in agent.conversation_history:
         formatted_msg = {
@@ -162,11 +168,9 @@ async def get_history():
             "content": msg.get("content", "")
         }
         
-        # Добавляем информацию о токенах для сообщений ассистента
         if msg.get("role") == "assistant" and msg.get("tokens"):
             formatted_msg["tokens"] = msg["tokens"]
         
-        # Добавляем информацию о вложениях для пользовательских сообщений
         if msg.get("role") == "user" and "attachments" in msg and msg["attachments"]:
             formatted_msg["attachments"] = []
             for att in msg["attachments"]:
@@ -176,14 +180,11 @@ async def get_history():
                     "size_bytes": att.get("size_bytes", 0),
                 }
                 
-                # Добавляем URL для превью, если файл существует
                 saved_path = att.get("saved_path")
                 if saved_path and os.path.exists(saved_path):
-                    # Создаем относительный URL для статической раздачи
                     rel_path = os.path.relpath(saved_path, FILES_DIR)
                     attachment_info["url"] = f"/files/{rel_path}"
                     
-                    # Если это изображение, добавляем превью
                     if att.get("mime_type", "").startswith("image/"):
                         attachment_info["is_image"] = True
                         attachment_info["preview_url"] = f"/files/{rel_path}"
@@ -195,7 +196,11 @@ async def get_history():
         
         formatted_history.append(formatted_msg)
     
-    return {"history": formatted_history, "summaries": agent.summaries}
+    return {
+        "history": formatted_history,
+        "summaries": agent.summaries,
+        "context_stats": agent.get_context_stats()
+    }
 
 @app.get("/stats")
 async def get_token_stats():
@@ -211,6 +216,71 @@ async def get_context_stats():
         raise HTTPException(status_code=503, detail="Agent not initialized")
     return agent.get_context_stats()
 
+@app.get("/context-strategy")
+async def get_context_strategy():
+    """Вернуть текущую стратегию контекста"""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    return {
+        "current_strategy": agent.context_strategy,
+        "available_strategies": ["sliding_window", "sticky_facts", "branching", "summary"]
+    }
+
+@app.post("/context-strategy")
+async def set_context_strategy(request: StrategyRequest):
+    """Установить стратегию контекста"""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    try:
+        agent.set_context_strategy(request.strategy)
+        return {"status": "ok", "strategy": request.strategy}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Branching endpoints
+@app.post("/branch/save")
+async def save_branch(request: BranchRequest):
+    """Сохранить текущее состояние как новую ветку"""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    try:
+        agent.save_checkpoint(request.name)
+        return {"status": "ok", "branch": request.name}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/branch/switch")
+async def switch_branch(request: BranchRequest):
+    """Переключиться на другую ветку"""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    try:
+        agent.switch_branch(request.name)
+        return {"status": "ok", "branch": request.name, "current_branch": agent.get_current_branch()}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/branch/list")
+async def list_branches():
+    """Получить список всех веток"""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    return {
+        "branches": agent.list_branches(),
+        "current_branch": agent.get_current_branch()
+    }
+
+@app.delete("/branch/{name}")
+async def delete_branch(name: str):
+    """Удалить ветку"""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    try:
+        agent.delete_branch(name)
+        return {"status": "ok", "deleted_branch": name}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 @app.post("/send")
 async def send_message(
     message: str = Form(""),
@@ -225,7 +295,6 @@ async def send_message(
         
         if files:
             for file in files:
-                # Проверка размера файла
                 file_content = await file.read()
                 file_size_mb = len(file_content) / (1024 * 1024)
                 
@@ -235,22 +304,18 @@ async def send_message(
                         detail=f"Файл {file.filename} превышает максимальный размер {agent.max_file_size_mb}MB"
                     )
                 
-                # Определение MIME типа
                 mime = magic.from_buffer(file_content[:1024], mime=True)
                 file_extension = file.filename.split('.')[-1].lower()
                 
-                # Проверка разрешенных типов
                 if file_extension not in ALLOWED_EXTENSIONS:
                     raise HTTPException(
                         status_code=400,
                         detail=f"Тип файла {file_extension} не поддерживается. Разрешены: {', '.join(ALLOWED_EXTENSIONS)}"
                     )
                 
-                # Сохраняем файл
                 unique_filename = f"{uuid.uuid4().hex}_{file.filename}"
                 saved_path = os.path.join(agent.agent_files_dir, unique_filename)
                 
-                # Создаем директорию если не существует
                 os.makedirs(agent.agent_files_dir, exist_ok=True)
                 
                 with open(saved_path, "wb") as f:
@@ -263,12 +328,11 @@ async def send_message(
                     "saved_path": saved_path,
                 }
                 
-                # Извлечение текста для документов
                 if mime == "application/pdf" or file_extension == "pdf":
                     extracted_text = extract_text_from_pdf(file_content)
                     if extracted_text:
                         file_info["extracted_text"] = extracted_text
-                        file_info["content"] = extracted_text  # Добавляем для совместимости
+                        file_info["content"] = extracted_text
                 
                 elif mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document" or file_extension == "docx":
                     extracted_text = extract_text_from_docx(file_content)
@@ -283,7 +347,6 @@ async def send_message(
                         file_info["content"] = extracted_text
                 
                 elif mime.startswith("image/"):
-                    # Создаем превью для изображений
                     preview_path = process_image_for_preview(file_content, file.filename, agent.agent_files_dir)
                     if preview_path:
                         file_info["preview_path"] = preview_path
@@ -291,18 +354,15 @@ async def send_message(
                 
                 processed_files.append(file_info)
         
-        # Отправляем сообщение агенту
         user_message = message if message else ""
         
         logger.info(f"Sending to agent: message='{user_message}', files={len(processed_files)}")
         
-        # Получаем ответ и статистику токенов
         assistant_reply, token_stats = await agent.send_message(
             user_message=user_message,
             files=processed_files if processed_files else None
         )
         
-        # Форматируем историю для ответа
         formatted_history = []
         for msg in agent.conversation_history:
             formatted_msg = {
@@ -310,7 +370,6 @@ async def send_message(
                 "content": msg.get("content", "")
             }
             
-            # Добавляем информацию о токенах
             if msg.get("role") == "assistant" and msg.get("tokens"):
                 formatted_msg["tokens"] = msg["tokens"]
             
@@ -335,7 +394,8 @@ async def send_message(
         return SendResponse(
             assistant_reply=assistant_reply,
             history=formatted_history,
-            token_stats=token_stats
+            token_stats=token_stats,
+            context_stats=agent.get_context_stats()
         )
         
     except HTTPException:
@@ -346,7 +406,7 @@ async def send_message(
 
 @app.post("/reset")
 async def reset_conversation():
-    """Очистить историю диалога, удалить файлы и обнулить статистику токенов"""
+    """Очистить историю диалога"""
     if agent is None:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     try:
