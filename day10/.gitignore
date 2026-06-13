@@ -1,0 +1,5 @@
+/.venv
+/venv
+.env
+/agent_history
+/agent_files

@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>LLM Agent Chat с поддержкой файлов и умным контекстом</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .chat-container {
+            max-width: 900px;
+            width: 100%;
+            height: 90vh;
+            background: white;
+            border-radius: 24px;
+            box-shadow: 0 20px 35px -10px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-header {
+            background: #2c3e66;
+            color: white;
+            padding: 12px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .header-left {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .chat-header h1 {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin: 0;
+        }
+        .agent-id {
+            font-size: 0.75rem;
+            background: rgba(255,255,255,0.2);
+            padding: 4px 12px;
+            border-radius: 40px;
+            font-family: monospace;
+        }
+        
+        /* Сворачиваемая статистика в шапке */
+        .stats-collapsible {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255,255,255,0.15);
+            border-radius: 40px;
+            padding: 4px 12px 4px 8px;
+        }
+        .stats-toggle {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 1.2rem;
+            cursor: pointer;
+            padding: 4px;
+            display: inline-flex;
+            align-items: center;
+            border-radius: 50%;
+            transition: background 0.2s;
+        }
+        .stats-toggle:hover {
+            background: rgba(255,255,255,0.2);
+        }
+        .stats-full, .stats-mini {
+            font-size: 0.8rem;
+            font-family: 'Courier New', monospace;
+        }
+        .stats-full {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .stats-mini {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            white-space: nowrap;
+        }
+        .stats-mini span {
+            font-weight: bold;
+        }
+        .stats-collapsible.collapsed .stats-full {
+            display: none;
+        }
+        .stats-collapsible.collapsed .stats-mini {
+            display: flex;
+        }
+        .stats-collapsible:not(.collapsed) .stats-full {
+            display: flex;
+        }
+        .stats-collapsible:not(.collapsed) .stats-mini {
+            display: none;
+        }
+        .stats-full span, .stats-mini span {
+            background: rgba(0,0,0,0.2);
+            padding: 4px 8px;
+            border-radius: 20px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .stat-label {
+            font-weight: 600;
+        }
+        
+        /* Индикатор суммаризации */
+        .summary-indicator {
+            background: rgba(255,255,255,0.15);
+            border-radius: 40px;
+            padding: 4px 12px;
+            font-size: 0.75rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            cursor: help;
+        }
+        .summary-indicator:hover {
+            background: rgba(255,255,255,0.25);
+        }
+        
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            background: #f9fafc;
+        }
+        .message {
+            display: flex;
+            flex-direction: column;
+            max-width: 80%;
+            animation: fadeIn 0.2s ease;
+        }
+        .message.user {
+            align-self: flex-end;
+        }
+        .message.assistant {
+            align-self: flex-start;
+        }
+        .message-bubble {
+            padding: 10px 16px;
+            border-radius: 22px;
+            line-height: 1.45;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .user .message-bubble {
+            background: #2c3e66;
+            color: white;
+            border-bottom-right-radius: 6px;
+        }
+        .assistant .message-bubble {
+            background: #e4e6eb;
+            color: #1e1e2f;
+            border-bottom-left-radius: 6px;
+        }
+        .message-meta {
+            font-size: 0.7rem;
+            margin-top: 4px;
+            margin-left: 12px;
+            margin-right: 12px;
+            color: #6c757d;
+        }
+        .user .message-meta {
+            text-align: right;
+        }
+        .token-info {
+            font-size: 0.7rem;
+            color: #6c757d;
+            margin-top: 4px;
+            margin-left: 12px;
+            font-family: 'Courier New', monospace;
+        }
+        .assistant .token-info {
+            color: #6c757d;
+        }
+        .attachments {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+        .attachment {
+            background: rgba(0,0,0,0.05);
+            border-radius: 8px;
+            padding: 8px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+        }
+        .attachment img {
+            max-width: 100px;
+            max-height: 100px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .attachment .file-icon {
+            width: 32px;
+            height: 32px;
+            background: #6c757d;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 18px;
+        }
+        .attachment .file-info {
+            display: flex;
+            flex-direction: column;
+        }
+        .attachment .filename {
+            font-weight: 500;
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .attachment .file-size {
+            font-size: 0.7rem;
+            color: #6c757d;
+        }
+        .file-preview-area {
+            margin-top: 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 8px;
+        }
+        .file-preview-item {
+            position: relative;
+            background: white;
+            border-radius: 8px;
+            padding: 8px;
+            border: 1px solid #dee2e6;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .file-preview-item img {
+            width: 40px;
+            height: 40px;
+            object-fit: cover;
+            border-radius: 4px;
+        }
+        .remove-file {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: #dc3545;
+            color: white;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .typing-indicator {
+            display: flex;
+            gap: 5px;
+            padding: 10px 16px;
+            background: #e4e6eb;
+            border-radius: 22px;
+            width: fit-content;
+            align-items: center;
+        }
+        .typing-indicator span {
+            width: 8px;
+            height: 8px;
+            background: #6c757d;
+            border-radius: 50%;
+            display: inline-block;
+            animation: blink 1.3s infinite;
+        }
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes blink {
+            0%, 60%, 100% { opacity: 0.3; transform: translateY(0);}
+            30% { opacity: 1; transform: translateY(-4px);}
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px);}
+            to { opacity: 1; transform: translateY(0);}
+        }
+        .input-area {
+            padding: 16px 20px;
+            background: white;
+            border-top: 1px solid #ddd;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .input-controls {
+            display: flex;
+            gap: 12px;
+            align-items: flex-end;
+        }
+        textarea {
+            flex: 1;
+            border: 1px solid #ccc;
+            border-radius: 28px;
+            padding: 12px 18px;
+            font-family: inherit;
+            font-size: 1rem;
+            resize: none;
+            outline: none;
+            transition: 0.2s;
+            max-height: 150px;
+        }
+        textarea:focus {
+            border-color: #2c3e66;
+            box-shadow: 0 0 0 2px rgba(44,62,102,0.2);
+        }
+        button {
+            background: #2c3e66;
+            border: none;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 40px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 0.9rem;
+        }
+        button:hover {
+            background: #1e2a4a;
+        }
+        button:disabled {
+            background: #9aaebf;
+            cursor: not-allowed;
+        }
+        .file-btn {
+            background: #6c757d;
+            padding: 12px 16px;
+        }
+        .file-btn:hover {
+            background: #5a6268;
+        }
+        .reset-btn {
+            background: #d9534f;
+        }
+        .reset-btn:hover {
+            background: #c9302c;
+        }
+        .error-toast {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: #f8d7da;
+            color: #721c24;
+            padding: 12px 20px;
+            border-radius: 12px;
+            border-left: 5px solid #d9534f;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            font-size: 0.9rem;
+            animation: fadeIn 0.2s;
+        }
+        @media (max-width: 600px) {
+            .message { max-width: 95%; }
+            .chat-container { height: 95vh; }
+            button { padding: 10px 16px; }
+            .stats-full { gap: 6px; }
+            .stats-full span { padding: 2px 6px; font-size: 0.7rem; }
+        }
+    </style>
+</head>
+<body>
+<div class="chat-container">
+    <div class="chat-header">
+        <div class="header-left">
+            <h1>🤖 LLM Agent (умный контекст)</h1>
+            <span class="agent-id" id="agentIdLabel">загрузка...</span>
+            <div class="summary-indicator" id="summaryIndicator" title="Информация о суммаризации истории">
+                📋 <span id="summaryCount">0</span> суммаризаций
+            </div>
+        </div>
+        
+        <!-- Сворачиваемый блок статистики -->
+        <div class="stats-collapsible" id="statsCollapsible">
+            <button class="stats-toggle" id="statsToggle" title="Свернуть/развернуть">📊</button>
+            <div class="stats-full" id="statsFull">
+                <span>📤 <span class="stat-label">Токенов в запросе:</span> <span class="stat-value" id="prompt-tokens">0</span></span>
+                <span>💬 <span class="stat-label">Токенов в ответе:</span> <span class="stat-value" id="completion-tokens">0</span></span>
+                <span>📊 <span class="stat-label">Токенов в запросе (всего):</span> <span class="stat-value" id="last-total">0</span></span>
+                <span>🔁 <span class="stat-label">Всего за сессию:</span> <span class="stat-value" id="session-tokens">0</span></span>
+            </div>
+            <div class="stats-mini" id="statsMini">
+                <span>📊 <span class="stat-label">Сессия:</span> <span id="session-tokens-mini">0</span></span>
+            </div>
+        </div>
+    </div>
+    
+    <div class="chat-messages" id="chatMessages">
+        <div class="message assistant">
+            <div class="message-bubble">Добро пожаловать! Отправьте сообщение или прикрепите файлы (изображения, PDF, DOCX, TXT).</div>
+            <div class="message-meta">✨ Поддерживается умное управление контекстом — старые сообщения автоматически суммаризируются</div>
+        </div>
+    </div>
+    <div class="input-area">
+        <div id="filePreviewArea" class="file-preview-area" style="display: none;"></div>
+        <div class="input-controls">
+            <textarea id="messageInput" rows="1" placeholder="Введите сообщение..."></textarea>
+            <button id="fileBtn" class="file-btn">📎</button>
+            <input type="file" id="fileInput" multiple style="display: none;" accept="image/*,.txt,.pdf,.docx,.md,.py">
+            <button id="sendBtn">Отправить</button>
+            <button id="resetBtn" class="reset-btn">Очистить</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/chat.js"></script>
+</body>
+</html>
