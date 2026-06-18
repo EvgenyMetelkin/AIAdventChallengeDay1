@@ -1,33 +1,58 @@
-let isWaiting = false;  // блокировка отправки во время ожидания ответа
+let isWaiting = false;
+let currentUserId = null;
 
-// Загружаем историю при старте и информацию об агенте
+// Загружаем список пользователей
+async function loadUsers() {
+    try {
+        const response = await fetch('/api/users');
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        
+        const select = document.getElementById('userSelect');
+        select.innerHTML = '';
+        
+        data.users.forEach(user => {
+            const option = document.createElement('option');
+            option.value = user.user_id;
+            option.textContent = `${user.name} (${user.history_length})`;
+            if (user.user_id === data.current_user_id) {
+                option.selected = true;
+                currentUserId = user.user_id;
+            }
+            select.appendChild(option);
+        });
+        
+        // Загружаем историю для текущего пользователя
+        if (currentUserId) {
+            loadHistory();
+        }
+        
+        // Обновляем ID агента
+        updateAgentInfo();
+        
+    } catch (err) {
+        console.error('Ошибка загрузки пользователей:', err);
+        showError('Не удалось загрузить список пользователей');
+    }
+}
+
+// Загружаем историю текущего пользователя
 async function loadHistory() {
     try {
         const response = await fetch('/history');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        // отображаем историю (data.history)
         renderMessages(data.history);
     } catch (err) {
         console.error('Ошибка загрузки истории:', err);
         showError('Не удалось загрузить историю чата');
     }
-    // также загрузим информацию об агенте для отображения ID
-    try {
-        const infoRes = await fetch('/info');
-        if (infoRes.ok) {
-            const info = await infoRes.json();
-            const agentIdSpan = document.getElementById('agentIdLabel');
-            if (agentIdSpan) agentIdSpan.textContent = `ID: ${info.agent_id}`;
-        }
-    } catch(e) { console.warn(e); }
 }
 
 // Отрисовка истории (массив сообщений с role и content)
 function renderMessages(history) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
-    // Очищаем контейнер, но оставляем приветственное сообщение, если истории нет
     container.innerHTML = '';
     if (!history || history.length === 0) {
         container.innerHTML = `<div class="message assistant"><div class="message-bubble">История пуста. Напишите что-нибудь!</div></div>`;
@@ -43,7 +68,7 @@ function renderMessages(history) {
     scrollToBottom();
 }
 
-// Вспомогательная функция: добавить одно сообщение в DOM (без анимации печати)
+// Вспомогательная функция: добавить одно сообщение в DOM
 function appendMessageToDOM(role, content, scroll = true) {
     const container = document.getElementById('chatMessages');
     const messageDiv = document.createElement('div');
@@ -56,10 +81,10 @@ function appendMessageToDOM(role, content, scroll = true) {
     if (scroll) scrollToBottom();
 }
 
-// Функция для показа индикатора печати (ассистент печатает)
+// Индикатор печати
 let typingElement = null;
 function showTypingIndicator() {
-    hideTypingIndicator(); // убираем старый, если есть
+    hideTypingIndicator();
     const container = document.getElementById('chatMessages');
     typingElement = document.createElement('div');
     typingElement.className = 'message assistant';
@@ -85,7 +110,6 @@ async function sendMessage() {
         return;
     }
 
-    // Блокируем интерфейс
     isWaiting = true;
     const sendBtn = document.getElementById('sendBtn');
     const resetBtn = document.getElementById('resetBtn');
@@ -93,12 +117,9 @@ async function sendMessage() {
     resetBtn.disabled = true;
     input.disabled = true;
 
-    // Оптимистично показываем сообщение пользователя
     appendMessageToDOM('user', message, true);
     input.value = '';
     input.style.height = 'auto';
-
-    // Показываем индикатор печати
     showTypingIndicator();
 
     try {
@@ -112,22 +133,17 @@ async function sendMessage() {
             throw new Error(errData.detail || `Server error: ${response.status}`);
         }
         const data = await response.json();
-        // Убираем индикатор печати
         hideTypingIndicator();
-        // Обновляем всю историю (чтобы синхронизировать с сервером)
         renderMessages(data.history);
     } catch (err) {
         hideTypingIndicator();
-        // Если ошибка, убираем "печатает" и показываем ошибку. Сообщение пользователя уже есть,
-        // но ответа не будет. Можно добавить сообщение об ошибке.
-        showError(`Ошибка: ${err.message}`);
-        // Удаляем последнее сообщение пользователя? Не будем, но можем добавить системное сообщение об ошибке
         const container = document.getElementById('chatMessages');
         const errorDiv = document.createElement('div');
         errorDiv.className = 'message assistant';
         errorDiv.innerHTML = `<div class="message-bubble" style="background:#f8d7da; color:#721c24;">❌ Не удалось получить ответ: ${escapeHtml(err.message)}</div>`;
         container.appendChild(errorDiv);
         scrollToBottom();
+        showError(`Ошибка: ${err.message}`);
     } finally {
         isWaiting = false;
         sendBtn.disabled = false;
@@ -137,7 +153,7 @@ async function sendMessage() {
     }
 }
 
-// Очистка истории
+// Сброс истории
 async function resetChat() {
     if (isWaiting) {
         showError('Дождитесь завершения текущего запроса');
@@ -148,13 +164,127 @@ async function resetChat() {
         const response = await fetch('/reset', { method: 'POST' });
         if (!response.ok) throw new Error(`Reset failed: ${response.status}`);
         const result = await response.json();
-        // Очищаем DOM и показываем пустое состояние
         const container = document.getElementById('chatMessages');
         container.innerHTML = `<div class="message assistant"><div class="message-bubble">История очищена. Начните новый диалог.</div></div>`;
         showError('История успешно очищена', 'success');
     } catch (err) {
         showError(`Ошибка очистки: ${err.message}`);
     }
+}
+
+// Переключение пользователя
+async function switchUser(userId) {
+    if (userId === currentUserId) return;
+    if (isWaiting) {
+        showError('Дождитесь завершения текущего запроса');
+        document.getElementById('userSelect').value = currentUserId;
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/users/${userId}/switch`, {
+            method: 'POST'
+        });
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || `Switch failed: ${response.status}`);
+        }
+        const data = await response.json();
+        currentUserId = data.user.user_id;
+        
+        // Обновляем интерфейс
+        await loadHistory();
+        updateAgentInfo();
+        showError(`Переключились на ${data.user.name}`, 'success');
+    } catch (err) {
+        showError(`Ошибка переключения: ${err.message}`);
+        // Возвращаем выбор обратно
+        document.getElementById('userSelect').value = currentUserId;
+    }
+}
+
+// Создание пользователя
+function showCreateUserModal() {
+    document.getElementById('createUserModal').style.display = 'flex';
+    document.getElementById('userNameInput').value = '';
+    document.getElementById('preferencesFileInput').value = '';
+    document.getElementById('userNameInput').focus();
+}
+
+function closeCreateUserModal() {
+    document.getElementById('createUserModal').style.display = 'none';
+}
+
+async function createUser() {
+    const name = document.getElementById('userNameInput').value.trim();
+    if (!name) {
+        showError('Введите имя пользователя');
+        return;
+    }
+    
+    const fileInput = document.getElementById('preferencesFileInput');
+    const formData = new FormData();
+    formData.append('name', name);
+    if (fileInput.files.length > 0) {
+        formData.append('preferences', fileInput.files[0]);
+    }
+    
+    try {
+        const response = await fetch('/api/users', {
+            method: 'POST',
+            body: formData
+        });
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || `Create failed: ${response.status}`);
+        }
+        const data = await response.json();
+        closeCreateUserModal();
+        await loadUsers();
+        showError(`Пользователь ${data.user.name} создан`, 'success');
+    } catch (err) {
+        showError(`Ошибка создания: ${err.message}`);
+    }
+}
+
+// Удаление текущего пользователя
+async function deleteCurrentUser() {
+    if (!currentUserId) return;
+    if (isWaiting) {
+        showError('Дождитесь завершения текущего запроса');
+        return;
+    }
+    if (!confirm('Вы уверены, что хотите удалить текущего пользователя?')) return;
+    
+    try {
+        const response = await fetch(`/api/users/${currentUserId}`, {
+            method: 'DELETE'
+        });
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || `Delete failed: ${response.status}`);
+        }
+        const data = await response.json();
+        await loadUsers();
+        showError('Пользователь удален', 'success');
+    } catch (err) {
+        showError(`Ошибка удаления: ${err.message}`);
+    }
+}
+
+// Обновление информации об агенте
+async function updateAgentInfo() {
+    try {
+        const infoRes = await fetch('/info');
+        if (infoRes.ok) {
+            const info = await infoRes.json();
+            const agentIdSpan = document.getElementById('agentIdLabel');
+            if (agentIdSpan) {
+                const userName = info.user ? info.user.name : 'Нет пользователя';
+                agentIdSpan.textContent = `${userName} | ID: ${info.agent_id}`;
+            }
+        }
+    } catch(e) { console.warn(e); }
 }
 
 // Утилиты
@@ -165,8 +295,6 @@ function escapeHtml(str) {
         if (m === '<') return '&lt;';
         if (m === '>') return '&gt;';
         return m;
-    }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
-        return c;
     });
 }
 
@@ -195,5 +323,15 @@ if (textarea) {
     });
 }
 
-// Загружаем историю при старте
-loadHistory();
+// Закрытие модального окна по клику вне его
+document.getElementById('createUserModal').addEventListener('click', function(e) {
+    if (e.target === this) {
+        closeCreateUserModal();
+    }
+});
+
+// Загружаем данные при старте
+loadUsers();
+
+// Периодическое обновление информации об агенте (каждые 30 секунд)
+setInterval(updateAgentInfo, 30000);

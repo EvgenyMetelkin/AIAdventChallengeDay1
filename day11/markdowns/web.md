@@ -1,50 +1,48 @@
-# Overview
-FastAPI web server for an LLM agent with file upload, conversation history, and token tracking.
+# web.py - FastAPI chat server for Agent
+
+## Overview
+FastAPI web server exposing chat endpoints for an LLM agent with conversation history management.
 
 ## Imports
-- `fastapi`, `uvicorn` (implied)
-- `PyPDF2`, `python-docx`, `Pillow`, `python-magic`
-- `dotenv`
+- `fastapi`, `uvicorn` (server)
+- `jinja2` (templating)
+- `pydantic` (validation)
+- `python-dotenv` (env loading)
+- `agent` (local module)
 
 ## API
 
-### `@app.get("/")`
-Render chat index page.
+### `app = FastAPI(lifespan=lifespan)`
+Main application instance.
 
-### `@app.get("/history")`
-Return conversation history with attachment metadata.
+### `GET /` → HTML chat interface
+Serves `templates/index.html`.
 
-### `@app.get("/stats")`
-Return token usage stats.
+### `GET /chat.js` → JavaScript client
+Serves `static/chat.js`.
 
-### `@app.get("/context-stats")`
-Return context management stats (message retention, summarization).
+### `GET /history` → `{"history": list}`
+Returns full conversation history.
 
-### `@app.post("/send")`
-`message: str = Form("")`, `files: List[UploadFile] = File(None)` → `SendResponse`
-Send user message with optional files. Returns assistant reply, history, token_stats.
+### `POST /send` → `{"assistant_reply": str, "history": list}`
+Request body: `{"message": str}`. Sends user message to agent.
 
-### `@app.post("/reset")`
-Clear conversation, delete files, reset token stats.
+### `POST /reset` → `{"status": "ok", "message": str}`
+Clears conversation history.
 
-### `@app.get("/info")`
-Return agent configuration.
+### `GET /info` → Agent metadata
+Returns `agent.get_agent_info()`.
 
 ## Usage
 ```python
-from fastapi.testclient import TestClient
 from web import app
-
-client = TestClient(app)
-response = client.post("/send", data={"message": "Hello"})
-assert response.status_code == 200
+import uvicorn
+uvicorn.run(app, host="0.0.0.0", port=8000)
 ```
 
 ## Notes
-- Requires `LLM_API_KEY` in `.env`
-- Files saved to `FILES_DIR` (default `agent_files`)
-- Supported extensions: `txt,md,py,json,pdf,docx,jpg,png,...` (see `ALLOWED_EXTENSIONS`)
-- Text extraction limited to 5000 chars per file
-- Vision support depends on LLM model
-- Conversation summary occurs every `SUMMARY_INTERVAL` messages
-- History keeps last `KEEP_LAST_N_MESSAGES` before summarization
+- Requires `.env` with `LLM_API_KEY` (mandatory). Optional: `LLM_BASE_URL`, `LLM_MODEL`, `TEMPERATURE`, `MAX_TOKENS`, `VERBOSE`, `AGENT_ID`, `HISTORY_DIR`.
+- Agent initialized on startup via `lifespan`. History auto-saves to `HISTORY_DIR` on shutdown.
+- Static files must exist at `static/chat.js` and templates at `templates/index.html`.
+- `/send` and `/reset` return 503 if agent not initialized.
+- Agent class assumed from `agent.py` with `send_message`, `reset_conversation`, `conversation_history`, `get_agent_info`.

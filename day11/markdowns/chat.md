@@ -1,55 +1,59 @@
-# LLM Agent Chat Frontend Client
+# Chat History & Agent UI
 
 ## Overview
-Browser-based chat client with file attachment support, token statistics display, and smart context summarization visualization.
+Client-side chat UI with history management, message streaming indicators, and agent info display.
 
-## Imports
-- None (vanilla JavaScript, runs in browser)
+## Imports (non-standard)
+None (vanilla JS, browser APIs)
 
-## API (Frontend Functions)
+## API
 
-### `sendMessage() -> Promise<void>`
-Sends message + files to `/send` endpoint, displays response, updates token stats.
+### `loadHistory()`
+Fetches `/history` and `/info`, renders messages and agent ID.
 
-### `loadHistory() -> Promise<void>`
-Fetches chat history from `/history` and renders messages.
+### `renderMessages(history)`
+Renders array of `{role, content}` messages to DOM.
 
-### `loadTokenStats() -> Promise<void>`
-GET `/stats` - updates token counters in UI.
+### `appendMessageToDOM(role, content, scroll)`
+Appends single message bubble with timestamp.
 
-### `loadContextStats() -> Promise<void>`
-GET `/context-stats` - updates summarization badges and tooltips.
+### `showTypingIndicator()` / `hideTypingIndicator()`
+Shows/hides animated "typing..." indicator.
 
-### `resetChat() -> Promise<void>`
-POST `/reset` - clears history, resets all counters and summaries.
+### `sendMessage()`
+POST `/send` with `{message}` payload, renders response history.
 
-### `appendMessageToDOM(role, content, scroll, attachments, tokens, isSummarized) -> void`
-Renders a single message bubble with optional file attachments and token info.
+### `resetChat()`
+POST `/reset`, clears history and shows confirmation.
 
-### `updateFilePreview() -> void`
-Shows preview thumbnails for selected files before sending.
+### `escapeHtml(str)`
+Sanitizes strings for DOM insertion (basic HTML escaping).
+
+### `scrollToBottom()`
+Scrolls chat container to bottom.
+
+### `showError(msg, type)`
+Shows toast notification (error/success).
 
 ## Usage
 
-```javascript
-// Initialize on page load
-document.addEventListener('DOMContentLoaded', () => {
-    init();  // Sets up event listeners, loads history, starts refresh
-});
+```html
+<!-- Required DOM elements -->
+<div id="chatMessages"></div>
+<textarea id="messageInput"></textarea>
+<button id="sendBtn" onclick="sendMessage()">Send</button>
+<button id="resetBtn" onclick="resetChat()">Reset</button>
+<span id="agentIdLabel"></span>
 
-// Manual send
-await sendMessage();
-
-// Reset conversation
-await resetChat();
+<!-- Load script -->
+<script src="chat.js"></script>
 ```
 
 ## Notes
-- Max file size: 10MB per file (frontend validation)
-- Supported preview: images only (shows thumbnail); other files show icon
-- Auto-refreshes stats every 15 seconds when tab is focused
-- Summarization banner appears when context stats change (throttled to 30s)
-- Collapsible stats panel state saved to localStorage
-- Enter sends message (Shift+Enter for newline)
-- Typing indicator shows during LLM response
-- No external dependencies - runs in any modern browser
+- **State:** `isWaiting` prevents concurrent requests.
+- **Pessimistic UI:** User message appears immediately, typing indicator shown while waiting.
+- **Error handling:** On failure, error message bubble is appended; user's message remains.
+- **History sync:** `sendMessage()` re-renders full history from server response, not incremental.
+- **Textarea auto-resize:** Grows to 150px max height.
+- **Edge case:** If `/send` fails after user message posted, user sees their message with no assistant response plus an error bubble.
+- **Toast timeout:** 4s auto-dismiss.
