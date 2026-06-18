@@ -5,6 +5,9 @@ import re
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
 
+# Импортируем утилиты из utils
+from utils import parse_preferences_md, format_preferences_md
+
 @dataclass
 class User:
     """Класс пользователя с предпочтениями и историей."""
@@ -31,6 +34,10 @@ class User:
             content = f.read()
         
         self.preferences = parse_preferences_md(content)
+        # Убеждаемся, что все ключи существуют
+        for key in ['STYLE', 'CONSTRAINTS', 'CONTEXT']:
+            if key not in self.preferences:
+                self.preferences[key] = ""
     
     def load_history(self):
         """Загрузка истории из JSON файла."""
@@ -62,14 +69,17 @@ class User:
     def get_system_prompt(self) -> str:
         """Формирование system-промпта из предпочтений."""
         parts = []
-        if self.preferences.get('STYLE'):
-            parts.append(f"## STYLE\n{self.preferences['STYLE']}")
-        if self.preferences.get('CONSTRAINTS'):
-            parts.append(f"## CONSTRAINTS\n{self.preferences['CONSTRAINTS']}")
-        if self.preferences.get('CONTEXT'):
-            parts.append(f"## CONTEXT\n{self.preferences['CONTEXT']}")
+        if self.preferences.get('STYLE') and self.preferences['STYLE'].strip():
+            parts.append(f"## STYLE\n{self.preferences['STYLE'].strip()}")
+        if self.preferences.get('CONSTRAINTS') and self.preferences['CONSTRAINTS'].strip():
+            parts.append(f"## CONSTRAINTS\n{self.preferences['CONSTRAINTS'].strip()}")
+        if self.preferences.get('CONTEXT') and self.preferences['CONTEXT'].strip():
+            parts.append(f"## CONTEXT\n{self.preferences['CONTEXT'].strip()}")
         
-        return "\n\n".join(parts) if parts else ""
+        # Если есть части, объединяем их с общим заголовком
+        if parts:
+            return "# System Instructions\n\n" + "\n\n".join(parts)
+        return ""
     
     def reset_history(self):
         """Сброс истории."""
@@ -84,45 +94,6 @@ class User:
             "preferences": self.preferences,
             "history_length": len(self.history)
         }
-
-
-def parse_preferences_md(content: str) -> Dict[str, str]:
-    """Парсинг MD файла с секциями ## STYLE, ## CONSTRAINTS, ## CONTEXT."""
-    preferences = {}
-    sections = ['STYLE', 'CONSTRAINTS', 'CONTEXT']
-    
-    for section in sections:
-        # Ищем секцию ## SECTION
-        pattern = f"## {section}\\s*\\n(.*?)(?=\\n## |\\Z)"
-        match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
-        if match:
-            preferences[section] = match.group(1).strip()
-        else:
-            preferences[section] = ""
-    
-    return preferences
-
-
-def format_preferences_md(preferences: Dict[str, str], name: str = "") -> str:
-    """Форматирование предпочтений в MD формат."""
-    parts = []
-    
-    # Добавляем заголовок с именем
-    if name:
-        parts.append(f"# {name}")
-    else:
-        parts.append("# Пользователь")
-    
-    sections = ['STYLE', 'CONSTRAINTS', 'CONTEXT']
-    
-    for section in sections:
-        content = preferences.get(section, "")
-        if content:
-            parts.append(f"## {section}\n{content}")
-        else:
-            parts.append(f"## {section}\n(не указано)")
-    
-    return "\n\n".join(parts)
 
 
 def create_user(user_dir: str, name: str, preferences_content: Optional[str] = None) -> User:

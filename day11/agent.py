@@ -80,8 +80,9 @@ class Agent:
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         
-        # Добавляем историю
-        messages.extend(self.user.history)
+        # Добавляем историю (все сообщения пользователя и ассистента)
+        for msg in self.user.history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
 
         url = f"{self.base_url}/chat/completions"
         headers = {
@@ -94,6 +95,25 @@ class Agent:
             "temperature": self.temperature,
             "max_tokens": self.max_tokens
         }
+
+        # Вывод запроса в консоль (всегда, не только в verbose режиме)
+        print("\n" + "="*80)
+        print(f"[REQUEST] Sending to LLM: {url}")
+        print("-"*40)
+        print("MODEL:", self.model)
+        print(f"TEMPERATURE: {self.temperature}, MAX_TOKENS: {self.max_tokens}")
+        print("-"*40)
+        print("MESSAGES:")
+        for i, msg in enumerate(messages):
+            role = msg["role"]
+            content = msg["content"]
+            # Обрезаем длинные сообщения для читаемости
+            if len(content) > 200:
+                content_preview = content[:200] + "... (truncated)"
+            else:
+                content_preview = content
+            print(f"[{i}] {role.upper()}: {content_preview}")
+        print("="*80 + "\n")
 
         self._log(f"Request to {url} with model {self.model}, history length {len(self.user.history)}")
 

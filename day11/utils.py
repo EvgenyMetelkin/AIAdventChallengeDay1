@@ -8,7 +8,8 @@ def parse_preferences_md(content: str) -> Dict[str, str]:
     sections = ['STYLE', 'CONSTRAINTS', 'CONTEXT']
     
     for section in sections:
-        pattern = f"## {section}\\s*\\n(.*?)(?=\\n## |\\Z)"
+        # Ищем секцию ## SECTION (с учетом возможных пробелов)
+        pattern = f"##\\s*{section}\\s*\\n(.*?)(?=\\n\\s*##|\\Z)"
         match = re.search(pattern, content, re.DOTALL | re.IGNORECASE)
         if match:
             preferences[section] = match.group(1).strip()
@@ -17,15 +18,22 @@ def parse_preferences_md(content: str) -> Dict[str, str]:
     
     return preferences
 
-def format_preferences_md(preferences: Dict[str, str]) -> str:
+def format_preferences_md(preferences: Dict[str, str], name: str = "") -> str:
     """Форматирование предпочтений в MD формат."""
-    sections = ['STYLE', 'CONSTRAINTS', 'CONTEXT']
     parts = []
+    
+    # Добавляем заголовок с именем
+    if name:
+        parts.append(f"# {name}")
+    else:
+        parts.append("# Пользователь")
+    
+    sections = ['STYLE', 'CONSTRAINTS', 'CONTEXT']
     
     for section in sections:
         content = preferences.get(section, "")
-        if content:
-            parts.append(f"## {section}\n{content}")
+        if content and content.strip():
+            parts.append(f"## {section}\n{content.strip()}")
         else:
             parts.append(f"## {section}\n(не указано)")
     
