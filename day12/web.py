@@ -704,6 +704,28 @@ async def reset_conversation(state: AppState = Depends(get_state)):
         raise HTTPException(status_code=500, detail=f"Reset error: {str(e)}")
 
 
+@app.get("/api/status")
+async def get_status(state: AppState = Depends(get_state)):
+    """Статус-бар: сводка о пользователях, агентах, сообщениях."""
+    agent = await state.get_agent()
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    
+    users_snapshot = await state.get_users_snapshot()
+    users_count = len(users_snapshot)
+    agents_count = len(agent.user.agents) if agent.user else 0
+    messages_count = len(agent.user.get_current_history()) if agent.user else 0
+    
+    return {
+        "users_count": users_count,
+        "agents_count": agents_count,
+        "messages_count": messages_count,
+        "model": agent.model,
+        "current_user": agent.user.to_dict() if agent.user else None,
+        "current_agent_id": agent.user.current_agent_id if agent.user else None
+    }
+
+
 @app.get("/info")
 async def get_agent_info(state: AppState = Depends(get_state)):
     """Получить информацию об агенте."""

@@ -1,12 +1,233 @@
-// chat.js - полный исправленный код
+// ============================================================
+// LLM Agent IDE — chat.js
+// VS Code-like interface with activity bar, sidebar, tabs,
+// bottom panel, status bar, and streaming chat.
+// ============================================================
 
+// ============================================================
+// GLOBAL STATE
+// ============================================================
 let isWaiting = false;
 let currentUserId = null;
 let currentAgentId = null;
-let agents = {};
+let agents = {};           // { agentId: { name, history_length, ... } }
+let usersList = [];        // [{ user_id, name, agent_count, ... }]
+let openTabs = [];         // [{ agentId, name, history }]
+let activeTabIdx = -1;
 
 // ============================================================
-// ЗАГРУЗКА ПОЛЬЗОВАТЕЛЕЙ И АГЕНТОВ
+// INITIALIZATION
+// ============================================================
+
+document.addEventListener('DOMContentLoaded', () => {
+    initActivityBar();
+    initPanelTabs();
+    initTextarea();
+    initModals();
+    loadUsers();
+});
+
+// ============================================================
+// ACTIVITY BAR
+// ============================================================
+
+function initActivityBar() {
+    const icons = document.querySelectorAll('.activity-icon');
+    icons.forEach(icon => {
+        icon.addEventListener('click', () => {
+            const panel = icon.dataset.panel;
+            switchSidebarPanel(panel);
+        });
+    });
+}
+
+function switchSidebarPanel(panel) {
+    // Update activity bar
+    document.querySelectorAll('.activity-icon').forEach(i => {
+        i.classList.toggle('active', i.dataset.panel === panel);
+    });
+    // Update sidebar panels
+    document.querySelectorAll('.sidebar-panel').forEach(p => {
+        p.classList.toggle('active', p.id === `panel-${panel}`);
+    });
+    // Ensure sidebar is visible
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.classList.add('open');
+    
+    if (panel === 'settings') {
+        updateSettingsPanel();
+    }
+}
+
+// Toggle sidebar (click active icon again)
+function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar) sidebar.classList.toggle('open');
+}
+
+// ============================================================
+// BOTTOM PANEL
+// ============================================================
+
+function initPanelTabs() {
+    const tabs = document.querySelectorAll('.panel-tab');
+    tabs.forEach(tab => {
+        tab.addEventListener('click', () => {
+            const pane = tab.dataset.panel;
+            switchPanelPane(pane);
+        });
+    });
+}
+
+function switchPanelPane(pane) {
+    document.querySelectorAll('.panel-tab').forEach(t => {
+        t.classList.toggle('active', t.dataset.panel === pane);
+    });
+    document.querySelectorAll('.panel-pane').forEach(p => {
+        p.classList.toggle('active', p.id === `pane-${pane}`);
+    });
+}
+
+function toggleBottomPanel() {
+    const panel = document.getElementById('bottomPanel');
+    if (!panel) return;
+    if (panel.style.display === 'none' || !panel.style.display) {
+        panel.style.display = 'flex';
+        updateWorkingMemoryDisplay();
+        switchPanelPane('problems');
+    } else {
+        panel.style.display = 'none';
+    }
+}
+
+// ============================================================
+// MODALS
+// ============================================================
+
+function initModals() {
+    // Close modals on backdrop click
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.addEventListener('click', function(e) {
+            if (e.target === this) {
+                this.style.display = 'none';
+            }
+        });
+    });
+}
+
+function showCreateUserModal() {
+    const modal = document.getElementById('createUserModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        const input = document.getElementById('userNameInput');
+        if (input) { input.value = ''; input.focus(); }
+        const fileInput = document.getElementById('preferencesFileInput');
+        if (fileInput) fileInput.value = '';
+    }
+}
+
+function closeCreateUserModal() {
+    const modal = document.getElementById('createUserModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function showCreateAgentModal() {
+    const modal = document.getElementById('createAgentModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        const input = document.getElementById('agentNameInput');
+        if (input) { input.value = ''; input.focus(); }
+    }
+}
+
+function closeCreateAgentModal() {
+    const modal = document.getElementById('createAgentModal');
+    if (modal) modal.style.display = 'none';
+}
+
+// ============================================================
+// TEXTAREA AUTO-RESIZE
+// ============================================================
+
+function initTextarea() {
+    const textarea = document.getElementById('messageInput');
+    if (textarea) {
+        textarea.addEventListener('input', function() {
+            this.style.height = 'auto';
+            this.style.height = Math.min(this.scrollHeight, 150) + 'px';
+        });
+    }
+}
+
+// ============================================================
+// TOAST NOTIFICATIONS
+// ============================================================
+
+function showToast(msg, type = 'info') {
+    const old = document.querySelectorAll('.toast');
+    old.forEach(t => t.remove());
+    
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.textContent = msg;
+    document.body.appendChild(toast);
+    
+    setTimeout(() => {
+        if (toast.parentNode) toast.remove();
+    }, 4000);
+}
+
+// deprecated alias for compatibility
+function showError(msg, type) {
+    showToast(msg, type === 'success' ? 'success' : 'error');
+}
+
+// ============================================================
+// STATUS BAR
+// ============================================================
+
+function updateStatusBar() {
+    const userEl = document.getElementById('statusUser');
+    const agentEl = document.getElementById('statusAgent');
+    const msgEl = document.getElementById('statusMessages');
+    const modelEl = document.getElementById('statusModel');
+    
+    if (userEl && currentUserId) {
+        const user = usersList.find(u => u.user_id === currentUserId);
+        userEl.textContent = user ? `👤 ${user.name}` : '👤 unknown';
+    }
+    
+    if (agentEl && currentAgentId && agents[currentAgentId]) {
+        agentEl.textContent = `🤖 ${agents[currentAgentId].name}`;
+    } else if (agentEl && currentAgentId) {
+        agentEl.textContent = `🤖 ${currentAgentId}`;
+    }
+    
+    if (msgEl && openTabs[activeTabIdx]) {
+        const count = openTabs[activeTabIdx].history.length;
+        msgEl.textContent = `💬 ${count} messages`;
+    } else if (msgEl) {
+        msgEl.textContent = '💬 0 messages';
+    }
+}
+
+function updateSettingsPanel() {
+    const info = document.getElementById('settingsInfo');
+    if (info) {
+        fetch('/info').then(r => r.json()).then(data => {
+            info.innerHTML = `
+                <p><strong>Model:</strong> ${data.model || 'N/A'}</p>
+                <p><strong>Agent ID:</strong> ${data.agent_id || 'N/A'}</p>
+                ${data.user ? `<p><strong>User:</strong> ${data.user.name}</p>` : ''}
+            `;
+        }).catch(() => {
+            info.textContent = 'Failed to load settings';
+        });
+    }
+}
+
+// ============================================================
+// API: LOAD USERS
 // ============================================================
 
 async function loadUsers() {
@@ -15,36 +236,27 @@ async function loadUsers() {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         
-        const select = document.getElementById('userSelect');
-        select.innerHTML = '';
+        usersList = data.users;
+        currentUserId = data.current_user_id;
         
-        data.users.forEach(user => {
-            const option = document.createElement('option');
-            option.value = user.user_id;
-            const agentCount = user.agent_count || 0;
-            option.textContent = `${user.name} (${agentCount} агентов)`;
-            if (user.user_id === data.current_user_id) {
-                option.selected = true;
-                currentUserId = user.user_id;
-            }
-            select.appendChild(option);
-        });
-        
-        // Загружаем агентов и историю для текущего пользователя
         if (currentUserId) {
             await loadAgents();
             await loadHistory();
             updateWorkingMemoryDisplay();
         }
         
-        // Обновляем информацию об агенте
-        updateAgentInfo();
+        renderExplorer();
+        updateStatusBar();
         
     } catch (err) {
-        console.error('Ошибка загрузки пользователей:', err);
-        showError('Не удалось загрузить список пользователей');
+        console.error('Error loading users:', err);
+        showToast('Failed to load users', 'error');
     }
 }
+
+// ============================================================
+// API: LOAD AGENTS
+// ============================================================
 
 async function loadAgents() {
     try {
@@ -53,52 +265,30 @@ async function loadAgents() {
         const data = await response.json();
         
         agents = {};
-        const select = document.getElementById('agentSelect');
-        select.innerHTML = '';
-        
-        if (!data.agents || data.agents.length === 0) {
-            // Если агентов нет, создаём дефолтного
-            await createDefaultAgent();
-            return loadAgents();
+        if (data.agents) {
+            data.agents.forEach(agent => {
+                agents[agent.agent_id] = agent;
+                if (agent.is_current) {
+                    currentAgentId = agent.agent_id;
+                }
+            });
         }
         
-        data.agents.forEach(agent => {
-            agents[agent.agent_id] = agent;
-            const option = document.createElement('option');
-            option.value = agent.agent_id;
-            option.textContent = `${agent.name} (${agent.history_length})`;
-            if (agent.is_current) {
-                option.selected = true;
-                currentAgentId = agent.agent_id;
-            }
-            select.appendChild(option);
-        });
+        if (!currentAgentId && data.agents && data.agents.length > 0) {
+            currentAgentId = data.agents[0].agent_id;
+        }
         
-        // Обновляем отображение текущего агента
-        updateCurrentAgentDisplay();
+        renderExplorer();
+        updateStatusBar();
         
     } catch (err) {
-        console.error('Ошибка загрузки агентов:', err);
-        showError('Не удалось загрузить список агентов');
-    }
-}
-
-async function createDefaultAgent() {
-    try {
-        const response = await fetch('/api/agents', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: 'default' })
-        });
-        if (!response.ok) throw new Error('Failed to create default agent');
-        await response.json();
-    } catch (err) {
-        console.error('Error creating default agent:', err);
+        console.error('Error loading agents:', err);
+        showToast('Failed to load agents', 'error');
     }
 }
 
 // ============================================================
-// ЗАГРУЗКА ИСТОРИИ
+// API: LOAD HISTORY
 // ============================================================
 
 async function loadHistory() {
@@ -106,41 +296,175 @@ async function loadHistory() {
         const response = await fetch('/history');
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
-        renderMessages(data.history);
+        
         if (data.agent_id) {
             currentAgentId = data.agent_id;
         }
-        updateCurrentAgentDisplay();
+        
+        // Open tab for current agent
+        openTabForAgent(currentAgentId, data.agent_name || 'Agent', data.history || []);
+        
+        renderMessages(data.history || []);
+        updateStatusBar();
+        
     } catch (err) {
-        console.error('Ошибка загрузки истории:', err);
-        showError('Не удалось загрузить историю чата');
+        console.error('Error loading history:', err);
+        showToast('Failed to load history', 'error');
     }
 }
 
 // ============================================================
-// УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ
+// SIDEBAR EXPLORER TREE
 // ============================================================
 
-function showCreateUserModal() {
-    const modal = document.getElementById('createUserModal');
-    if (modal) {
-        modal.style.display = 'flex';
-        const input = document.getElementById('userNameInput');
-        if (input) {
-            input.value = '';
-            input.focus();
+function renderExplorer() {
+    const tree = document.getElementById('explorerTree');
+    if (!tree) return;
+    
+    let html = '';
+    
+    // USERS section
+    html += '<div class="tree-section">';
+    html += '<div class="tree-section-header" onclick="toggleTreeSection(this)">';
+    html += '<span class="arrow">▾</span> USERS';
+    html += '</div>';
+    html += '<div class="tree-section-items">';
+    
+    usersList.forEach(user => {
+        const isActive = user.user_id === currentUserId;
+        const agentCount = user.agent_count || 0;
+        html += `<div class="tree-item ${isActive ? 'active' : ''}" 
+            onclick="switchUserById('${user.user_id}')"
+            title="${user.name} — ${agentCount} agents">`;
+        html += `<span class="item-icon">${isActive ? '●' : '○'}</span>`;
+        html += `<span class="item-label">${escapeHtml(user.name)}</span>`;
+        html += `<span style="color:var(--text-muted);font-size:11px;">${agentCount}</span>`;
+        html += '<div class="item-actions">';
+        html += `<button onclick="event.stopPropagation();deleteUserById('${user.user_id}')" class="danger" title="Delete user">✕</button>`;
+        html += '</div></div>';
+    });
+    
+    html += '</div></div>';
+    
+    // AGENTS section
+    html += '<div class="tree-section">';
+    html += '<div class="tree-section-header" onclick="toggleTreeSection(this)">';
+    html += '<span class="arrow">▾</span> AGENTS';
+    html += '</div>';
+    html += '<div class="tree-section-items">';
+    
+    Object.entries(agents).forEach(([id, agent]) => {
+        const isActive = id === currentAgentId;
+        const tabOpen = openTabs.some(t => t.agentId === id);
+        html += `<div class="tree-item ${isActive ? 'active' : ''}" 
+            onclick="switchAgentById('${id}')"
+            title="${agent.name} — ${agent.history_length || 0} messages">`;
+        html += `<span class="item-icon">${isActive ? '💬' : '📄'}</span>`;
+        html += `<span class="item-label">${escapeHtml(agent.name)}</span>`;
+        if (tabOpen && !isActive) {
+            html += `<span style="color:var(--accent);font-size:10px;">●</span>`;
         }
-        const fileInput = document.getElementById('preferencesFileInput');
-        if (fileInput) {
-            fileInput.value = '';
-        }
+        html += '<div class="item-actions">';
+        html += `<button onclick="event.stopPropagation();deleteAgentById('${id}')" class="danger" title="Delete agent">✕</button>`;
+        html += '</div></div>';
+    });
+    
+    html += '</div></div>';
+    
+    // MEMORY section
+    html += '<div class="tree-section">';
+    html += '<div class="tree-section-header" onclick="toggleTreeSection(this)">';
+    html += '<span class="arrow">▾</span> MEMORY';
+    html += '</div>';
+    html += '<div class="tree-section-items" id="explorerMemoryItems">';
+    html += '<div class="sidebar-empty" style="padding:8px;font-size:11px;">Click to load</div>';
+    html += '</div></div>';
+    
+    tree.innerHTML = html;
+}
+
+async function toggleTreeSection(header) {
+    header.classList.toggle('collapsed');
+    // Load memory items when expanding
+    if (!header.classList.contains('collapsed') && 
+        header.textContent.includes('MEMORY')) {
+        await loadMemoryForExplorer();
     }
 }
 
-function closeCreateUserModal() {
-    const modal = document.getElementById('createUserModal');
-    if (modal) {
-        modal.style.display = 'none';
+async function loadMemoryForExplorer() {
+    const container = document.getElementById('explorerMemoryItems');
+    if (!container) return;
+    
+    try {
+        const response = await fetch('/api/working_memory');
+        if (!response.ok) return;
+        const data = await response.json();
+        
+        if (!data.working_memory || data.working_memory.length === 0) {
+            container.innerHTML = '<div class="sidebar-empty" style="padding:8px;font-size:11px;">Empty</div>';
+            return;
+        }
+        
+        container.innerHTML = data.working_memory.map((sum, i) => `
+            <div class="tree-item" title="${escapeHtml(sum)}" 
+                 onclick="showToast('${escapeHtml(sum.slice(0, 200))}', 'info')">
+                <span class="item-icon">📝</span>
+                <span class="item-label">Summary #${i + 1}</span>
+            </div>
+        `).join('');
+    } catch (e) {
+        container.innerHTML = '<div class="sidebar-empty" style="padding:8px;font-size:11px;">Error</div>';
+    }
+}
+
+// ============================================================
+// USER MANAGEMENT
+// ============================================================
+
+async function switchUserById(userId) {
+    if (userId === currentUserId) return;
+    if (isWaiting) {
+        showToast('Wait for current request to finish', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/users/${userId}/switch`, { method: 'POST' });
+        if (!response.ok) throw new Error((await response.json().catch(()=>({}))).detail || 'Switch failed');
+        
+        const data = await response.json();
+        currentUserId = data.user.user_id;
+        
+        await loadAgents();
+        await loadHistory();
+        renderExplorer();
+        updateStatusBar();
+        showToast(`Switched to ${data.user.name}`, 'success');
+    } catch (err) {
+        showToast(`Error: ${err.message}`, 'error');
+    }
+}
+
+async function deleteUserById(userId) {
+    if (isWaiting) {
+        showToast('Wait for current request to finish', 'error');
+        return;
+    }
+    
+    const user = usersList.find(u => u.user_id === userId);
+    const userName = user ? user.name : userId;
+    
+    if (!confirm(`Delete user "${userName}"?`)) return;
+    
+    try {
+        const response = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error((await response.json().catch(()=>({}))).detail || 'Delete failed');
+        
+        await loadUsers();
+        showToast(`User "${userName}" deleted`, 'success');
+    } catch (err) {
+        showToast(`Error: ${err.message}`, 'error');
     }
 }
 
@@ -148,188 +472,97 @@ async function createUser() {
     const nameInput = document.getElementById('userNameInput');
     const name = nameInput ? nameInput.value.trim() : '';
     
-    if (!name) {
-        showError('Введите имя пользователя');
-        return;
-    }
+    if (!name) { showToast('Enter a user name', 'error'); return; }
     
     const fileInput = document.getElementById('preferencesFileInput');
     const formData = new FormData();
     formData.append('name', name);
-    
     if (fileInput && fileInput.files.length > 0) {
         formData.append('preferences', fileInput.files[0]);
     }
     
     try {
-        const response = await fetch('/api/users', {
-            method: 'POST',
-            body: formData
-        });
-        
-        if (!response.ok) {
-            let errorMessage = `Create failed: ${response.status}`;
-            try {
-                const errData = await response.json();
-                if (errData.detail) {
-                    errorMessage = errData.detail;
-                }
-            } catch (e) {
-                // ignore
-            }
-            throw new Error(errorMessage);
-        }
+        const response = await fetch('/api/users', { method: 'POST', body: formData });
+        if (!response.ok) throw new Error((await response.json().catch(()=>({}))).detail || 'Create failed');
         
         const data = await response.json();
         closeCreateUserModal();
         await loadUsers();
-        showError(`Пользователь "${data.user.name}" создан`, 'success');
+        showToast(`User "${data.user.name}" created`, 'success');
     } catch (err) {
-        showError(`Ошибка создания: ${err.message}`);
+        showToast(`Error: ${err.message}`, 'error');
     }
 }
 
-async function deleteCurrentUser() {
-    if (!currentUserId) {
-        showError('Нет активного пользователя');
-        return;
-    }
-    
-    if (isWaiting) {
-        showError('Дождитесь завершения текущего запроса');
-        return;
-    }
-    
-    // Получаем имя пользователя для подтверждения
-    const select = document.getElementById('userSelect');
-    const selectedOption = select ? select.options[select.selectedIndex] : null;
-    const userName = selectedOption ? selectedOption.text : currentUserId;
-    
-    if (!confirm(`Вы уверены, что хотите удалить пользователя "${userName}"?`)) {
-        return;
-    }
-    
-    try {
-        const response = await fetch(`/api/users/${currentUserId}`, {
-            method: 'DELETE'
-        });
-        
-        if (!response.ok) {
-            let errorMessage = `Delete failed: ${response.status}`;
-            try {
-                const errData = await response.json();
-                if (errData.detail) {
-                    errorMessage = errData.detail;
-                }
-            } catch (e) {
-                // ignore
-            }
-            throw new Error(errorMessage);
-        }
-        
-        const data = await response.json();
-        await loadUsers();
-        showError('Пользователь удален', 'success');
-    } catch (err) {
-        showError(`Ошибка удаления: ${err.message}`);
-    }
+// Compatibility: called from HTML onchange
+function switchUser(userId) {
+    switchUserById(userId);
+}
+
+// Compatibility: called from HTML
+function deleteCurrentUser() {
+    if (currentUserId) deleteUserById(currentUserId);
 }
 
 // ============================================================
-// УПРАВЛЕНИЕ АГЕНТАМИ
+// AGENT MANAGEMENT
 // ============================================================
 
-async function switchUser(userId) {
-    if (userId === currentUserId) return;
-    if (isWaiting) {
-        showError('Дождитесь завершения текущего запроса');
-        document.getElementById('userSelect').value = currentUserId;
-        return;
-    }
-    
-    try {
-        const response = await fetch(`/api/users/${userId}/switch`, {
-            method: 'POST'
-        });
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.detail || `Switch failed: ${response.status}`);
-        }
-        const data = await response.json();
-        currentUserId = data.user.user_id;
-        
-        // Обновляем интерфейс
-        await loadAgents();
-        await loadHistory();
-        updateAgentInfo();
-        updateWorkingMemoryDisplay();
-        showError(`Переключились на ${data.user.name}`, 'success');
-    } catch (err) {
-        showError(`Ошибка переключения: ${err.message}`);
-        document.getElementById('userSelect').value = currentUserId;
-    }
-}
-
-async function switchAgent(agentId) {
+async function switchAgentById(agentId) {
     if (agentId === currentAgentId) return;
     if (isWaiting) {
-        showError('Дождитесь завершения текущего запроса');
-        document.getElementById('agentSelect').value = currentAgentId;
+        showToast('Wait for current request to finish', 'error');
         return;
     }
     
     const agentName = agents[agentId]?.name || agentId;
-    if (!confirm(`Переключиться на агента "${agentName}"? Текущая история будет суммирована в рабочую память.`)) {
-        document.getElementById('agentSelect').value = currentAgentId;
-        return;
-    }
+    
+    if (!confirm(`Switch to agent "${agentName}"? Current history will be summarized into working memory.`)) return;
     
     try {
-        const response = await fetch(`/api/agents/${agentId}/switch`, {
-            method: 'POST'
-        });
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.detail || `Switch failed: ${response.status}`);
-        }
+        const response = await fetch(`/api/agents/${agentId}/switch`, { method: 'POST' });
+        if (!response.ok) throw new Error((await response.json().catch(()=>({}))).detail || 'Switch failed');
+        
         const data = await response.json();
         currentAgentId = data.current_agent_id;
         
         if (data.summary_generated) {
-            showError('✨ Сводка добавлена в рабочую память', 'success');
-            if (data.summary_preview) {
-                console.log('Summary preview:', data.summary_preview);
-            }
+            showToast('Summary added to working memory', 'success');
         }
         
-        // Обновляем интерфейс
         await loadAgents();
         await loadHistory();
-        updateAgentInfo();
+        renderExplorer();
         updateWorkingMemoryDisplay();
+        updateStatusBar();
         
     } catch (err) {
-        showError(`Ошибка переключения: ${err.message}`);
-        document.getElementById('agentSelect').value = currentAgentId;
+        showToast(`Error: ${err.message}`, 'error');
     }
 }
 
-function showCreateAgentModal() {
-    const modal = document.getElementById('createAgentModal');
-    if (modal) {
-        modal.style.display = 'flex';
-        const input = document.getElementById('agentNameInput');
-        if (input) {
-            input.value = '';
-            input.focus();
-        }
+async function deleteAgentById(agentId) {
+    if (isWaiting) {
+        showToast('Wait for current request to finish', 'error');
+        return;
     }
-}
-
-function closeCreateAgentModal() {
-    const modal = document.getElementById('createAgentModal');
-    if (modal) {
-        modal.style.display = 'none';
+    
+    const agentName = agents[agentId]?.name || agentId;
+    if (!confirm(`Delete agent "${agentName}"?`)) return;
+    
+    try {
+        const response = await fetch(`/api/agents/${agentId}`, { method: 'DELETE' });
+        if (!response.ok) throw new Error((await response.json().catch(()=>({}))).detail || 'Delete failed');
+        
+        // Close tab if open
+        closeTab(agentId);
+        await loadAgents();
+        await loadHistory();
+        renderExplorer();
+        updateStatusBar();
+        showToast(`Agent "${agentName}" deleted`, 'success');
+    } catch (err) {
+        showToast(`Error: ${err.message}`, 'error');
     }
 }
 
@@ -337,209 +570,134 @@ async function createAgent() {
     const nameInput = document.getElementById('agentNameInput');
     const name = nameInput ? nameInput.value.trim() : '';
     
-    if (!name) {
-        showError('Введите имя агента');
-        return;
-    }
+    if (!name) { showToast('Enter an agent name', 'error'); return; }
     
     try {
         const response = await fetch('/api/agents', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: name })
+            body: JSON.stringify({ name })
         });
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.detail || `Create failed: ${response.status}`);
-        }
+        if (!response.ok) throw new Error((await response.json().catch(()=>({}))).detail || 'Create failed');
+        
         const data = await response.json();
         closeCreateAgentModal();
         await loadAgents();
         await loadHistory();
-        showError(`Агент "${data.name}" создан`, 'success');
+        renderExplorer();
+        showToast(`Agent "${data.name}" created`, 'success');
     } catch (err) {
-        showError(`Ошибка создания: ${err.message}`);
+        showToast(`Error: ${err.message}`, 'error');
     }
 }
 
-async function deleteCurrentAgent() {
-    if (!currentAgentId) {
-        showError('Нет активного агента');
-        return;
-    }
-    if (isWaiting) {
-        showError('Дождитесь завершения текущего запроса');
-        return;
-    }
-    
-    const agentName = agents[currentAgentId]?.name || currentAgentId;
-    if (!confirm(`Удалить агента "${agentName}"?`)) return;
-    
-    try {
-        const response = await fetch(`/api/agents/${currentAgentId}`, {
-            method: 'DELETE'
-        });
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.detail || `Delete failed: ${response.status}`);
-        }
-        const data = await response.json();
-        await loadAgents();
-        await loadHistory();
-        updateAgentInfo();
-        showError(`Агент "${agentName}" удален`, 'success');
-    } catch (err) {
-        showError(`Ошибка удаления: ${err.message}`);
-    }
+// Compatibility
+function switchAgent(agentId) {
+    switchAgentById(agentId);
+}
+
+function deleteCurrentAgent() {
+    if (currentAgentId) deleteAgentById(currentAgentId);
 }
 
 // ============================================================
-// РАБОЧАЯ ПАМЯТЬ
+// TAB MANAGEMENT
 // ============================================================
 
-async function loadWorkingMemory() {
-    try {
-        const response = await fetch('/api/working_memory');
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        renderWorkingMemory(data.working_memory);
-    } catch (err) {
-        console.error('Ошибка загрузки рабочей памяти:', err);
-        const container = document.getElementById('workingMemoryContent');
-        if (container) {
-            container.innerHTML = '<div class="empty-memory">❌ Ошибка загрузки памяти</div>';
-        }
+function openTabForAgent(agentId, name, history) {
+    // Check if tab already exists
+    const existingIdx = openTabs.findIndex(t => t.agentId === agentId);
+    if (existingIdx >= 0) {
+        activeTabIdx = existingIdx;
+        // Refresh history
+        openTabs[existingIdx].history = history;
+    } else {
+        openTabs.push({ agentId, name, history });
+        activeTabIdx = openTabs.length - 1;
     }
+    renderTabs();
+    hideWelcome();
 }
 
-function renderWorkingMemory(summaries) {
-    const container = document.getElementById('workingMemoryContent');
-    if (!container) return;
+function closeTab(agentId) {
+    const idx = openTabs.findIndex(t => t.agentId === agentId);
+    if (idx < 0) return;
     
-    if (!summaries || summaries.length === 0) {
-        container.innerHTML = '<div class="empty-memory">📭 Рабочая память пуста</div>';
-        return;
+    openTabs.splice(idx, 1);
+    
+    if (openTabs.length === 0) {
+        activeTabIdx = -1;
+        showWelcome();
+    } else if (activeTabIdx >= openTabs.length) {
+        activeTabIdx = openTabs.length - 1;
+        const tab = openTabs[activeTabIdx];
+        renderMessages(tab.history);
+    } else if (idx <= activeTabIdx) {
+        activeTabIdx = Math.max(0, activeTabIdx - 1);
+        const tab = openTabs[activeTabIdx];
+        renderMessages(tab.history);
     }
     
-    container.innerHTML = summaries.map((summary, index) => `
-        <div class="memory-item">
-            <div class="memory-number">#${index + 1}</div>
-            <div class="memory-text">${escapeHtml(summary)}</div>
+    renderTabs();
+}
+
+function activateTab(idx) {
+    if (idx < 0 || idx >= openTabs.length) return;
+    activeTabIdx = idx;
+    const tab = openTabs[idx];
+    currentAgentId = tab.agentId;
+    renderMessages(tab.history);
+    renderTabs();
+    updateStatusBar();
+}
+
+function renderTabs() {
+    const bar = document.getElementById('tabBar');
+    if (!bar) return;
+    
+    bar.innerHTML = openTabs.map((tab, i) => `
+        <div class="tab ${i === activeTabIdx ? 'active' : ''}" onclick="activateTab(${i})">
+            <span class="tab-icon">💬</span>
+            <span>${escapeHtml(tab.name)}</span>
+            <button class="tab-close" onclick="event.stopPropagation();closeTab('${tab.agentId}')">×</button>
         </div>
     `).join('');
 }
 
-function toggleWorkingMemory() {
-    const panel = document.getElementById('workingMemoryPanel');
-    if (!panel) return;
-    
-    if (panel.style.display === 'none' || !panel.style.display) {
-        panel.style.display = 'block';
-        loadWorkingMemory();
-        // Обновляем текст кнопки
-        const btn = document.querySelector('.memory-btn');
-        if (btn) {
-            btn.innerHTML = '🧠 Скрыть память <span class="badge" id="workingMemoryBadge">0</span>';
-        }
-    } else {
-        panel.style.display = 'none';
-        const btn = document.querySelector('.memory-btn');
-        if (btn) {
-            btn.innerHTML = '🧠 Память <span class="badge" id="workingMemoryBadge">0</span>';
-        }
-    }
+function showWelcome() {
+    const welcome = document.getElementById('welcomeScreen');
+    const messages = document.getElementById('chatMessages');
+    if (welcome) welcome.style.display = 'flex';
+    if (messages) messages.style.display = 'none';
 }
 
-async function clearWorkingMemory() {
-    if (!confirm('Очистить всю рабочую память?')) return;
-    
-    try {
-        const response = await fetch('/api/working_memory', {
-            method: 'DELETE'
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        await response.json();
-        await loadWorkingMemory();
-        updateWorkingMemoryDisplay();
-        showError('Рабочая память очищена', 'success');
-    } catch (err) {
-        showError(`Ошибка очистки: ${err.message}`);
-    }
+function hideWelcome() {
+    const welcome = document.getElementById('welcomeScreen');
+    const messages = document.getElementById('chatMessages');
+    if (welcome) welcome.style.display = 'none';
+    if (messages) messages.style.display = 'flex';
 }
 
 // ============================================================
-// ОБНОВЛЕНИЕ ИНТЕРФЕЙСА
-// ============================================================
-
-function updateCurrentAgentDisplay() {
-    const display = document.getElementById('currentAgentDisplay');
-    if (display && currentAgentId && agents[currentAgentId]) {
-        display.textContent = `🤖 ${agents[currentAgentId].name}`;
-    } else if (display) {
-        display.textContent = '🤖 нет агента';
-    }
-}
-
-async function updateWorkingMemoryDisplay() {
-    try {
-        const response = await fetch('/api/working_memory');
-        if (!response.ok) return;
-        const data = await response.json();
-        
-        const badge = document.getElementById('workingMemoryBadge');
-        if (badge) {
-            badge.textContent = data.count || 0;
-            badge.title = `${data.count || 0} сводок в рабочей памяти`;
-        }
-    } catch (err) {
-        console.error('Error updating working memory display:', err);
-    }
-}
-
-function updateAgentInfo() {
-    const agentIdSpan = document.getElementById('agentIdLabel');
-    if (!agentIdSpan) return;
-    
-    let info = '';
-    if (currentUserId) {
-        const select = document.getElementById('userSelect');
-        const selectedOption = select?.options[select.selectedIndex];
-        const userName = selectedOption ? selectedOption.text.split(' (')[0] : 'Unknown';
-        info = `${userName}`;
-    }
-    
-    if (currentAgentId && agents[currentAgentId]) {
-        info += ` → ${agents[currentAgentId].name}`;
-    } else if (currentAgentId) {
-        info += ` → ${currentAgentId}`;
-    }
-    
-    if (info) {
-        agentIdSpan.textContent = info;
-    } else {
-        agentIdSpan.textContent = 'загрузка...';
-    }
-}
-
-// ============================================================
-// ОТПРАВКА СООБЩЕНИЙ
+// RENDER MESSAGES
 // ============================================================
 
 function renderMessages(history) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
     container.innerHTML = '';
+    
     if (!history || history.length === 0) {
-        container.innerHTML = `<div class="message assistant"><div class="message-bubble">💬 Начните диалог с агентом!</div></div>`;
+        container.innerHTML = `<div class="message assistant"><div class="message-bubble">Start a conversation by typing below.</div></div>`;
         return;
     }
-    for (const msg of history) {
-        if (msg.role === 'user') {
-            appendMessageToDOM('user', msg.content, false);
-        } else if (msg.role === 'assistant') {
-            appendMessageToDOM('assistant', msg.content, false);
+    
+    history.forEach(msg => {
+        if (msg.role === 'user' || msg.role === 'assistant') {
+            appendMessageToDOM(msg.role, msg.content, false);
         }
-    }
+    });
+    
     scrollToBottom();
 }
 
@@ -547,36 +705,29 @@ function appendMessageToDOM(role, content, scroll = true) {
     const container = document.getElementById('chatMessages');
     if (!container) return;
     
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${role}`;
-    messageDiv.innerHTML = `
+    const msgDiv = document.createElement('div');
+    msgDiv.className = `message ${role}`;
+    msgDiv.innerHTML = `
+        <div class="message-header">
+            <span class="message-role">${role === 'user' ? 'You' : 'Assistant'}</span>
+            <span class="message-time">${new Date().toLocaleTimeString()}</span>
+        </div>
         <div class="message-bubble">${escapeHtml(content)}</div>
-        <div class="message-meta">${role === 'user' ? '👤 Вы' : '🤖 Ассистент'} · ${new Date().toLocaleTimeString()}</div>
     `;
-    container.appendChild(messageDiv);
+    container.appendChild(msgDiv);
     if (scroll) scrollToBottom();
 }
 
-let typingElement = null;
-function showTypingIndicator() {
-    hideTypingIndicator();
-    const container = document.getElementById('chatMessages');
-    if (!container) return;
-    
-    typingElement = document.createElement('div');
-    typingElement.className = 'message assistant';
-    typingElement.id = 'typing-indicator';
-    typingElement.innerHTML = `<div class="typing-indicator"><span></span><span></span><span></span> Печатает...</div>`;
-    container.appendChild(typingElement);
-    scrollToBottom();
-}
-
-function hideTypingIndicator() {
-    if (typingElement && typingElement.parentNode) {
-        typingElement.parentNode.removeChild(typingElement);
-        typingElement = null;
+function scrollToBottom() {
+    const editor = document.getElementById('editorContent');
+    if (editor) {
+        editor.scrollTop = editor.scrollHeight;
     }
 }
+
+// ============================================================
+// SEND MESSAGE (with streaming)
+// ============================================================
 
 async function sendMessage() {
     const input = document.getElementById('messageInput');
@@ -585,46 +736,43 @@ async function sendMessage() {
     const message = input.value.trim();
     if (!message) return;
     if (isWaiting) {
-        showError('Подождите, ответ уже загружается');
+        showToast('Please wait for the current response', 'info');
         return;
     }
-
+    
+    hideWelcome();
+    
     isWaiting = true;
     const sendBtn = document.getElementById('sendBtn');
     const resetBtn = document.getElementById('resetBtn');
     if (sendBtn) sendBtn.disabled = true;
     if (resetBtn) resetBtn.disabled = true;
     input.disabled = true;
-
+    
     appendMessageToDOM('user', message, true);
     input.value = '';
     input.style.height = 'auto';
-    showTypingIndicator();
-
-    // Use streaming endpoint for real-time token display
-    const useStream = true;
-
+    
+    // Show stream indicator
+    const streamBubble = document.getElementById('streamBubble');
+    const streamContent = document.getElementById('streamContent');
+    if (streamBubble) streamBubble.style.display = 'block';
+    if (streamContent) streamContent.textContent = '...';
+    scrollToBottom();
+    
     try {
-        if (useStream) {
-            await sendMessageStream(message);
-        } else {
-            await sendMessageRegular(message);
-        }
-        // Обновляем информацию об агенте (количество сообщений)
+        await sendMessageStream(message);
         await loadAgents();
         updateWorkingMemoryDisplay();
+        updateStatusBar();
+        renderExplorer();
     } catch (err) {
-        hideTypingIndicator();
-        const container = document.getElementById('chatMessages');
-        if (container) {
-            const errorDiv = document.createElement('div');
-            errorDiv.className = 'message assistant';
-            errorDiv.innerHTML = `<div class="message-bubble" style="background:#f8d7da; color:#721c24;">❌ Не удалось получить ответ: ${escapeHtml(err.message)}</div>`;
-            container.appendChild(errorDiv);
-            scrollToBottom();
+        if (streamContent) {
+            streamContent.innerHTML = `<span style="color:var(--red);">Error: ${escapeHtml(err.message)}</span>`;
         }
-        showError(`Ошибка: ${err.message}`);
+        showToast(`Error: ${err.message}`, 'error');
     } finally {
+        if (streamBubble) streamBubble.style.display = 'none';
         isWaiting = false;
         if (sendBtn) sendBtn.disabled = false;
         if (resetBtn) resetBtn.disabled = false;
@@ -633,26 +781,11 @@ async function sendMessage() {
     }
 }
 
-async function sendMessageRegular(message) {
-    const response = await fetch('/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: message, user_id: currentUserId })
-    });
-    if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail || `Server error: ${response.status}`);
-    }
-    const data = await response.json();
-    hideTypingIndicator();
-    renderMessages(data.history);
-}
-
 async function sendMessageStream(message) {
     const response = await fetch('/send/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: message, user_id: currentUserId })
+        body: JSON.stringify({ message, user_id: currentUserId })
     });
     
     if (!response.ok) {
@@ -660,19 +793,7 @@ async function sendMessageStream(message) {
         throw new Error(errData.detail || `Server error: ${response.status}`);
     }
     
-    hideTypingIndicator();
-    
-    // Create a streaming message bubble
-    const container = document.getElementById('chatMessages');
-    const streamDiv = document.createElement('div');
-    streamDiv.className = 'message assistant';
-    const bubble = document.createElement('div');
-    bubble.className = 'message-bubble';
-    bubble.textContent = '';
-    streamDiv.appendChild(bubble);
-    container.appendChild(streamDiv);
-    scrollToBottom();
-    
+    const streamContent = document.getElementById('streamContent');
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let fullContent = '';
@@ -691,46 +812,150 @@ async function sendMessageStream(message) {
                         const data = JSON.parse(line.slice(6));
                         if (data.token) {
                             fullContent += data.token;
-                            bubble.textContent = fullContent;
+                            if (streamContent) streamContent.textContent = fullContent;
                             scrollToBottom();
                         }
                         if (data.error) {
-                            bubble.innerHTML = `<span style="color:#721c24;">❌ ${escapeHtml(data.error)}</span>`;
+                            if (streamContent) {
+                                streamContent.innerHTML = `<span style="color:var(--red);">Error: ${escapeHtml(data.error)}</span>`;
+                            }
                         }
-                    } catch (e) {
-                        // skip malformed JSON lines
-                    }
+                        if (data.done) {
+                            // Add to DOM
+                            if (streamContent) streamContent.textContent = '';
+                            appendMessageToDOM('assistant', fullContent, true);
+                            // Update tab history
+                            if (activeTabIdx >= 0 && activeTabIdx < openTabs.length) {
+                                openTabs[activeTabIdx].history.push(
+                                    { role: 'user', content: message },
+                                    { role: 'assistant', content: fullContent }
+                                );
+                            }
+                        }
+                    } catch (e) { /* skip malformed */ }
                 }
             }
         }
     } catch (err) {
-        bubble.innerHTML = `<span style="color:#721c24;">❌ Ошибка стриминга: ${escapeHtml(err.message)}</span>`;
+        if (streamContent) {
+            streamContent.innerHTML = `<span style="color:var(--red);">Stream error: ${escapeHtml(err.message)}</span>`;
+        }
     }
 }
 
+// Legacy regular send (non-streaming)
+async function sendMessageRegular(message) {
+    const response = await fetch('/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, user_id: currentUserId })
+    });
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error: ${response.status}`);
+    }
+    const data = await response.json();
+    document.getElementById('streamBubble').style.display = 'none';
+    renderMessages(data.history);
+}
+
+// ============================================================
+// RESET CHAT
+// ============================================================
+
 async function resetChat() {
     if (isWaiting) {
-        showError('Дождитесь завершения текущего запроса');
+        showToast('Wait for current request to finish', 'info');
         return;
     }
-    if (!confirm('Очистить историю текущего агента?')) return;
+    if (!confirm('Clear current agent history?')) return;
+    
     try {
         const response = await fetch('/reset', { method: 'POST' });
         if (!response.ok) throw new Error(`Reset failed: ${response.status}`);
         await response.json();
+        
         const container = document.getElementById('chatMessages');
         if (container) {
-            container.innerHTML = `<div class="message assistant"><div class="message-bubble">🗑️ История очищена. Начните новый диалог.</div></div>`;
+            container.innerHTML = `<div class="message assistant"><div class="message-bubble">🗑 History cleared. Start a new conversation.</div></div>`;
         }
+        
+        if (activeTabIdx >= 0 && activeTabIdx < openTabs.length) {
+            openTabs[activeTabIdx].history = [];
+        }
+        
         await loadAgents();
-        showError('История успешно очищена', 'success');
+        renderExplorer();
+        updateStatusBar();
+        showToast('History cleared', 'success');
     } catch (err) {
-        showError(`Ошибка очистки: ${err.message}`);
+        showToast(`Error: ${err.message}`, 'error');
     }
 }
 
 // ============================================================
-// УТИЛИТЫ
+// WORKING MEMORY
+// ============================================================
+
+async function updateWorkingMemoryDisplay() {
+    try {
+        const response = await fetch('/api/working_memory');
+        if (!response.ok) return;
+        const data = await response.json();
+        
+        const badge = document.getElementById('memoryBadge');
+        if (badge) badge.textContent = data.count || 0;
+        
+        // Update memory pane if panel is open
+        const memoryList = document.getElementById('memoryList');
+        if (memoryList && document.getElementById('bottomPanel')?.style.display !== 'none') {
+            renderMemoryItems(data.working_memory || []);
+        }
+    } catch (err) {
+        console.error('Error updating working memory:', err);
+    }
+}
+
+function renderMemoryItems(summaries) {
+    const container = document.getElementById('memoryList');
+    if (!container) return;
+    
+    if (!summaries || summaries.length === 0) {
+        container.innerHTML = '<div class="panel-empty">Working memory is empty</div>';
+        return;
+    }
+    
+    container.innerHTML = summaries.map((sum, i) => `
+        <div class="memory-item">
+            <div class="memory-number">#${i + 1}</div>
+            <div class="memory-text">${escapeHtml(sum)}</div>
+        </div>
+    `).join('');
+}
+
+async function clearWorkingMemory() {
+    if (!confirm('Clear all working memory?')) return;
+    
+    try {
+        const response = await fetch('/api/working_memory', { method: 'DELETE' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        await response.json();
+        
+        updateWorkingMemoryDisplay();
+        showToast('Working memory cleared', 'success');
+    } catch (err) {
+        showToast(`Error: ${err.message}`, 'error');
+    }
+}
+
+function toggleWorkingMemory() {
+    toggleBottomPanel();
+    switchPanelPane('memory');
+    updateWorkingMemoryDisplay();
+}
+
+// ============================================================
+// UTILITIES
 // ============================================================
 
 function escapeHtml(str) {
@@ -740,87 +965,46 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
-function scrollToBottom() {
-    const container = document.getElementById('chatMessages');
-    if (container) {
-        container.scrollTop = container.scrollHeight;
-    }
-}
-
-function showError(msg, type = 'error') {
-    // Удаляем предыдущие тосты
-    const oldToasts = document.querySelectorAll('.error-toast');
-    oldToasts.forEach(toast => toast.remove());
-    
-    const toast = document.createElement('div');
-    toast.className = `error-toast ${type}`;
-    toast.innerText = msg;
-    document.body.appendChild(toast);
-    
-    setTimeout(() => {
-        if (toast.parentNode) {
-            toast.remove();
-        }
-    }, 4000);
-}
-
 // ============================================================
-// ИНИЦИАЛИЗАЦИЯ
+// PERIODIC REFRESH
 // ============================================================
 
-// Автоматическое расширение textarea
-const textarea = document.getElementById('messageInput');
-if (textarea) {
-    textarea.addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = Math.min(this.scrollHeight, 150) + 'px';
-    });
-}
-
-// Закрытие модальных окон по клику вне их
-document.addEventListener('DOMContentLoaded', function() {
-    const userModal = document.getElementById('createUserModal');
-    if (userModal) {
-        userModal.addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeCreateUserModal();
-            }
-        });
-    }
-    
-    const agentModal = document.getElementById('createAgentModal');
-    if (agentModal) {
-        agentModal.addEventListener('click', function(e) {
-            if (e.target === this) {
-                closeCreateAgentModal();
-            }
-        });
-    }
-});
-
-// Клавиша Enter для создания агента
-document.getElementById('agentNameInput')?.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        createAgent();
-    }
-});
-
-// Клавиша Enter для создания пользователя
-document.getElementById('userNameInput')?.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') {
-        e.preventDefault();
-        createUser();
-    }
-});
-
-// Загружаем данные при старте
-document.addEventListener('DOMContentLoaded', function() {
-    loadUsers();
-});
-
-// Периодическое обновление (каждые 30 секунд)
 setInterval(() => {
-    updateAgentInfo();
-    updateWorkingMemoryDisplay();
+    if (!isWaiting) {
+        updateStatusBar();
+    }
 }, 30000);
+
+// ============================================================
+// KEYBOARD SHORTCUTS
+// ============================================================
+
+document.addEventListener('keydown', function(e) {
+    // Ctrl+Shift+E: toggle sidebar
+    if (e.ctrlKey && e.shiftKey && e.key === 'E') {
+        e.preventDefault();
+        switchSidebarPanel('explorer');
+    }
+    // Ctrl+J: toggle bottom panel
+    if (e.ctrlKey && e.key === 'j') {
+        e.preventDefault();
+        toggleBottomPanel();
+    }
+    // Ctrl+B: toggle sidebar
+    if (e.ctrlKey && e.key === 'b') {
+        e.preventDefault();
+        toggleSidebar();
+    }
+});
+
+// ============================================================
+// CLOSE MODALS ON ESCAPE
+// ============================================================
+
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        document.querySelectorAll('.modal').forEach(m => {
+            if (m.style.display === 'flex') m.style.display = 'none';
+        });
+    }
+});

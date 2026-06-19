@@ -2,96 +2,185 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
-    <title>LLM Agent Chat</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Agent — IDE</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
-<!-- Модальное окно для создания пользователя -->
+<!-- ============================================================
+     ACTIVITY BAR (far left)
+     ============================================================ -->
+<div class="activity-bar" id="activityBar">
+    <div class="activity-icon active" data-panel="explorer" title="Explorer (Ctrl+Shift+E)">
+        📁
+    </div>
+    <div class="activity-icon" data-panel="search" title="Search (Ctrl+Shift+F)">
+        🔍
+    </div>
+    <div class="activity-icon" data-panel="git" title="Source Control (Ctrl+Shift+G)">
+        📊
+    </div>
+    <div class="spacer"></div>
+    <div class="activity-icon" data-panel="settings" title="Settings">
+        ⚙️
+    </div>
+</div>
+
+<!-- ============================================================
+     SIDEBAR (left panel)
+     ============================================================ -->
+<div class="sidebar" id="sidebar">
+    <!-- Explorer panel -->
+    <div class="sidebar-panel active" id="panel-explorer">
+        <div class="sidebar-header">
+            <span>EXPLORER</span>
+            <div class="sidebar-actions">
+                <button class="icon-btn" onclick="showCreateUserModal()" title="New User">👤+</button>
+                <button class="icon-btn" onclick="showCreateAgentModal()" title="New Agent">🤖+</button>
+            </div>
+        </div>
+        <div class="sidebar-tree" id="explorerTree">
+            <!-- Filled by JS -->
+        </div>
+    </div>
+    <!-- Search panel (placeholder) -->
+    <div class="sidebar-panel" id="panel-search">
+        <div class="sidebar-header"><span>SEARCH</span></div>
+        <div class="sidebar-empty">Search not implemented</div>
+    </div>
+    <!-- Git panel (placeholder) -->
+    <div class="sidebar-panel" id="panel-git">
+        <div class="sidebar-header"><span>SOURCE CONTROL</span></div>
+        <div class="sidebar-empty">No changes</div>
+    </div>
+    <!-- Settings panel -->
+    <div class="sidebar-panel" id="panel-settings">
+        <div class="sidebar-header"><span>SETTINGS</span></div>
+        <div class="sidebar-empty" id="settingsInfo">Model: loading...</div>
+    </div>
+</div>
+
+<!-- ============================================================
+     MAIN EDITOR AREA
+     ============================================================ -->
+<div class="editor-area" id="editorArea">
+    <!-- Tab bar -->
+    <div class="tab-bar" id="tabBar">
+        <!-- Filled by JS -->
+    </div>
+    <!-- Editor content (chat messages) -->
+    <div class="editor-content" id="editorContent">
+        <div class="welcome-screen" id="welcomeScreen">
+            <div class="welcome-logo">🤖</div>
+            <h1>LLM Agent IDE</h1>
+            <p>Multi-user, multi-agent chat with working memory</p>
+            <div class="welcome-actions">
+                <button onclick="showCreateAgentModal()">New Agent Session</button>
+                <button onclick="document.getElementById('messageInput').focus()">Start Chatting</button>
+            </div>
+        </div>
+        <div class="chat-messages" id="chatMessages" style="display:none;">
+            <!-- Filled by JS -->
+        </div>
+        <!-- Stream bubble (shown during streaming) -->
+        <div class="stream-bubble" id="streamBubble" style="display:none;">
+            <div class="message assistant">
+                <div class="message-bubble" id="streamContent"></div>
+            </div>
+        </div>
+    </div>
+    <!-- Input area (terminal-like) -->
+    <div class="input-area" id="inputArea">
+        <span class="prompt">❯</span>
+        <textarea id="messageInput" rows="1" placeholder="Ask anything... (Enter to send, Shift+Enter for new line)"
+            onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+        <button id="sendBtn" onclick="sendMessage()" title="Send (Enter)">⏎</button>
+        <button id="resetBtn" class="reset-btn" onclick="resetChat()" title="Clear history">🗑</button>
+    </div>
+</div>
+
+<!-- ============================================================
+     BOTTOM PANEL
+     ============================================================ -->
+<div class="bottom-panel" id="bottomPanel" style="display:none;">
+    <div class="panel-tabs" id="panelTabs">
+        <div class="panel-tab active" data-panel="problems">PROBLEMS <span class="badge" id="problemsBadge">0</span></div>
+        <div class="panel-tab" data-panel="output">OUTPUT</div>
+        <div class="panel-tab" data-panel="terminal">TERMINAL</div>
+        <div class="panel-tab" data-panel="memory">MEMORY <span class="badge" id="memoryBadge">0</span></div>
+        <div class="panel-actions">
+            <button class="icon-btn" onclick="toggleBottomPanel()" title="Close panel">✕</button>
+        </div>
+    </div>
+    <div class="panel-content" id="panelContent">
+        <div class="panel-pane active" id="pane-problems">
+            <div class="panel-empty">No problems detected ✨</div>
+        </div>
+        <div class="panel-pane" id="pane-output">
+            <div class="panel-empty" id="outputLog">Output log will appear here</div>
+        </div>
+        <div class="panel-pane" id="pane-terminal">
+            <div class="panel-empty">Terminal not connected</div>
+        </div>
+        <div class="panel-pane" id="pane-memory">
+            <div class="memory-list" id="memoryList">
+                <div class="panel-empty">Working memory is empty</div>
+            </div>
+            <div class="memory-actions">
+                <button onclick="clearWorkingMemory()">🗑 Clear memory</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     STATUS BAR
+     ============================================================ -->
+<div class="status-bar" id="statusBar">
+    <div class="status-left">
+        <span class="status-item" id="statusBranch">🔵 main</span>
+    </div>
+    <div class="status-center">
+        <span class="status-item" id="statusUser">👤 loading...</span>
+        <span class="status-separator">→</span>
+        <span class="status-item" id="statusAgent">🤖 loading...</span>
+    </div>
+    <div class="status-right">
+        <span class="status-item" id="statusMessages">💬 0 messages</span>
+        <span class="status-item" id="statusModel">🧠 loading...</span>
+        <span class="status-item" id="statusFeedback" onclick="toggleBottomPanel()">⚠ 0 ⚡ 0</span>
+    </div>
+</div>
+
+<!-- ============================================================
+     MODALS (kept from original, restyled via CSS)
+     ============================================================ -->
+<!-- Create User Modal -->
 <div id="createUserModal" class="modal">
     <div class="modal-content">
-        <h2>👤 Создать пользователя</h2>
-        <label for="userNameInput">Имя пользователя:</label>
-        <input type="text" id="userNameInput" placeholder="Введите имя">
-        <label for="preferencesFileInput">Файл предпочтений (опционально):</label>
+        <h2>👤 Create User</h2>
+        <label for="userNameInput">User name:</label>
+        <input type="text" id="userNameInput" placeholder="Enter name">
+        <label for="preferencesFileInput">Preferences file (optional):</label>
         <input type="file" id="preferencesFileInput" accept=".md">
         <div class="modal-buttons">
-            <button class="cancel-btn" onclick="closeCreateUserModal()">Отмена</button>
-            <button onclick="createUser()">Создать</button>
+            <button class="cancel-btn" onclick="closeCreateUserModal()">Cancel</button>
+            <button onclick="createUser()">Create</button>
         </div>
     </div>
 </div>
 
-<!-- Модальное окно для создания агента -->
+<!-- Create Agent Modal -->
 <div id="createAgentModal" class="modal">
     <div class="modal-content">
-        <h2>🤖 Создать агента</h2>
-        <label for="agentNameInput">Имя агента:</label>
-        <input type="text" id="agentNameInput" placeholder="Введите имя агента">
+        <h2>🤖 Create Agent</h2>
+        <label for="agentNameInput">Agent name:</label>
+        <input type="text" id="agentNameInput" placeholder="Enter agent name">
         <div class="modal-buttons">
-            <button class="cancel-btn" onclick="closeCreateAgentModal()">Отмена</button>
-            <button onclick="createAgent()">Создать</button>
+            <button class="cancel-btn" onclick="closeCreateAgentModal()">Cancel</button>
+            <button onclick="createAgent()">Create</button>
         </div>
-    </div>
-</div>
-
-<!-- Основной контейнер чата -->
-<div class="chat-container">
-    <!-- Шапка -->
-    <div class="chat-header">
-        <div class="header-left">
-            <span>🤖 LLM Agent</span>
-            <span class="agent-id" id="agentIdLabel">загрузка...</span>
-        </div>
-        <div class="user-controls">
-            <select id="userSelect" class="user-select" onchange="switchUser(this.value)">
-                <!-- Заполняется через JS -->
-            </select>
-            <button class="btn-small btn-success-small" onclick="showCreateUserModal()" title="Создать пользователя">+</button>
-            <button class="btn-small btn-danger-small" onclick="deleteCurrentUser()" title="Удалить пользователя">✕</button>
-        </div>
-    </div>
-
-    <!-- Панель управления агентами -->
-    <div class="agent-controls">
-        <div class="agent-controls-left">
-            <label for="agentSelect">🤖 Агент:</label>
-            <select id="agentSelect" class="agent-select" onchange="switchAgent(this.value)">
-                <!-- Заполняется через JS -->
-            </select>
-            <button class="btn-small btn-success-small" onclick="showCreateAgentModal()" title="Создать агента">+</button>
-            <button class="btn-small btn-danger-small" onclick="deleteCurrentAgent()" title="Удалить агента">✕</button>
-            <span class="current-agent-label" id="currentAgentDisplay">🤖 default</span>
-        </div>
-        <button class="memory-btn" onclick="toggleWorkingMemory()" title="Рабочая память">
-            🧠 Память <span class="badge" id="workingMemoryBadge">0</span>
-        </button>
-    </div>
-
-    <!-- Панель рабочей памяти -->
-    <div id="workingMemoryPanel" class="working-memory-panel" style="display:none;">
-        <div class="memory-header">
-            <span>🧠 Рабочая память (сводки завершённых диалогов)</span>
-            <button class="btn-small btn-danger-small" onclick="clearWorkingMemory()" title="Очистить память">🗑️ Очистить</button>
-        </div>
-        <div id="workingMemoryContent" class="memory-content">
-            <div class="empty-memory">Загрузка...</div>
-        </div>
-    </div>
-
-    <!-- Область сообщений -->
-    <div class="chat-messages" id="chatMessages">
-        <div class="message assistant">
-            <div class="message-bubble">Добро пожаловать! Отправьте сообщение, чтобы начать диалог.</div>
-        </div>
-    </div>
-
-    <!-- Область ввода -->
-    <div class="input-area">
-        <textarea id="messageInput" rows="1" placeholder="Введите сообщение..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
-        <button id="sendBtn" onclick="sendMessage()">Отправить</button>
-        <button id="resetBtn" class="reset-btn" onclick="resetChat()">Очистить</button>
     </div>
 </div>
 
