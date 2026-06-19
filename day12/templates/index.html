@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+    <title>LLM Agent Chat</title>
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+            background: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+        .chat-container {
+            max-width: 900px;
+            width: 100%;
+            height: 95vh;
+            background: white;
+            border-radius: 24px;
+            box-shadow: 0 20px 35px -10px rgba(0,0,0,0.1);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .chat-header {
+            background: #2c3e66;
+            color: white;
+            padding: 14px 20px;
+            font-size: 1.2rem;
+            font-weight: 600;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .agent-id {
+            font-size: 0.7rem;
+            background: rgba(255,255,255,0.2);
+            padding: 3px 12px;
+            border-radius: 40px;
+            font-family: monospace;
+            font-weight: normal;
+        }
+        .user-controls {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .user-select {
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid rgba(255,255,255,0.3);
+            background: rgba(255,255,255,0.1);
+            color: white;
+            font-size: 0.85rem;
+            cursor: pointer;
+            max-width: 150px;
+        }
+        .user-select option {
+            background: #2c3e66;
+            color: white;
+        }
+        .btn-small {
+            background: rgba(255,255,255,0.15);
+            border: 1px solid rgba(255,255,255,0.2);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+        .btn-small:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .btn-danger-small {
+            background: rgba(220, 53, 69, 0.6);
+            border-color: rgba(220, 53, 69, 0.4);
+        }
+        .btn-danger-small:hover {
+            background: rgba(220, 53, 69, 0.9);
+        }
+        .btn-success-small {
+            background: rgba(40, 167, 69, 0.4);
+            border-color: rgba(40, 167, 69, 0.3);
+        }
+        .btn-success-small:hover {
+            background: rgba(40, 167, 69, 0.7);
+        }
+
+        /* Панель управления агентами */
+        .agent-controls {
+            background: #f8f9fa;
+            padding: 6px 20px;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 6px;
+            min-height: 40px;
+        }
+        .agent-controls-left {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+        .agent-controls-left label {
+            font-size: 0.8rem;
+            color: #495057;
+            font-weight: 500;
+        }
+        .agent-select {
+            padding: 3px 6px;
+            border-radius: 6px;
+            border: 1px solid #ced4da;
+            font-size: 0.8rem;
+            background: white;
+            cursor: pointer;
+            max-width: 150px;
+        }
+        .agent-select option {
+            background: white;
+            color: #1e1e2f;
+        }
+        .current-agent-label {
+            font-size: 0.75rem;
+            color: #2c3e66;
+            background: #e9ecef;
+            padding: 2px 10px;
+            border-radius: 12px;
+            font-weight: 500;
+        }
+        .memory-btn {
+            background: #e9ecef;
+            border: 1px solid #ced4da;
+            color: #495057;
+            padding: 3px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background 0.2s;
+        }
+        .memory-btn:hover {
+            background: #dee2e6;
+        }
+        .memory-btn .badge {
+            background: #2c3e66;
+            color: white;
+            border-radius: 10px;
+            padding: 0 6px;
+            margin-left: 4px;
+            font-size: 0.7rem;
+        }
+
+        /* Панель рабочей памяти */
+        .working-memory-panel {
+            background: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+            padding: 10px 20px;
+            max-height: 250px;
+            overflow-y: auto;
+            flex-shrink: 0;
+        }
+        .memory-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #495057;
+            font-size: 0.9rem;
+        }
+        .memory-content {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .memory-item {
+            display: flex;
+            gap: 10px;
+            padding: 6px 12px;
+            background: white;
+            border-radius: 8px;
+            border-left: 3px solid #2c3e66;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+        .memory-number {
+            color: #6c757d;
+            font-weight: 600;
+            min-width: 30px;
+            font-size: 0.8rem;
+        }
+        .memory-text {
+            color: #1e1e2f;
+            flex: 1;
+            word-wrap: break-word;
+        }
+        .empty-memory {
+            color: #6c757d;
+            text-align: center;
+            padding: 16px;
+            font-style: italic;
+            font-size: 0.9rem;
+        }
+
+        .chat-messages {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            background: #f9fafc;
+            min-height: 200px;
+        }
+        .message {
+            display: flex;
+            flex-direction: column;
+            max-width: 80%;
+            animation: fadeIn 0.2s ease;
+        }
+        .message.user {
+            align-self: flex-end;
+        }
+        .message.assistant {
+            align-self: flex-start;
+        }
+        .message-bubble {
+            padding: 10px 16px;
+            border-radius: 22px;
+            line-height: 1.45;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+        }
+        .user .message-bubble {
+            background: #2c3e66;
+            color: white;
+            border-bottom-right-radius: 6px;
+        }
+        .assistant .message-bubble {
+            background: #e4e6eb;
+            color: #1e1e2f;
+            border-bottom-left-radius: 6px;
+        }
+        .message-meta {
+            font-size: 0.65rem;
+            margin-top: 3px;
+            margin-left: 12px;
+            margin-right: 12px;
+            color: #6c757d;
+        }
+        .user .message-meta {
+            text-align: right;
+        }
+        .typing-indicator {
+            display: flex;
+            gap: 5px;
+            padding: 10px 16px;
+            background: #e4e6eb;
+            border-radius: 22px;
+            width: fit-content;
+            align-items: center;
+        }
+        .typing-indicator span {
+            width: 8px;
+            height: 8px;
+            background: #6c757d;
+            border-radius: 50%;
+            display: inline-block;
+            animation: blink 1.3s infinite;
+        }
+        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
+        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
+        @keyframes blink {
+            0%, 60%, 100% { opacity: 0.3; transform: translateY(0);}
+            30% { opacity: 1; transform: translateY(-4px);}
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(8px);}
+            to { opacity: 1; transform: translateY(0);}
+        }
+        .input-area {
+            padding: 12px 20px;
+            background: white;
+            border-top: 1px solid #ddd;
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+            flex-shrink: 0;
+        }
+        textarea {
+            flex: 1;
+            border: 1px solid #ccc;
+            border-radius: 28px;
+            padding: 10px 18px;
+            font-family: inherit;
+            font-size: 0.95rem;
+            resize: none;
+            outline: none;
+            transition: 0.2s;
+            max-height: 120px;
+            min-height: 42px;
+        }
+        textarea:focus {
+            border-color: #2c3e66;
+            box-shadow: 0 0 0 2px rgba(44,62,102,0.2);
+        }
+        .input-area button {
+            background: #2c3e66;
+            border: none;
+            color: white;
+            padding: 10px 18px;
+            border-radius: 40px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+            font-size: 0.85rem;
+            white-space: nowrap;
+        }
+        .input-area button:hover {
+            background: #1e2a4a;
+        }
+        .input-area button:disabled {
+            background: #9aaebf;
+            cursor: not-allowed;
+        }
+        .reset-btn {
+            background: #d9534f;
+        }
+        .reset-btn:hover {
+            background: #c9302c;
+        }
+        .error-toast {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: #f8d7da;
+            color: #721c24;
+            padding: 10px 18px;
+            border-radius: 12px;
+            border-left: 5px solid #d9534f;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            z-index: 1000;
+            font-size: 0.85rem;
+            animation: fadeIn 0.2s;
+            max-width: 90%;
+        }
+        .error-toast.success {
+            background: #d4edda;
+            color: #155724;
+            border-left-color: #28a745;
+        }
+
+        /* Модальные окна */
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1001;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+            align-items: center;
+            justify-content: center;
+        }
+        .modal-content {
+            background: white;
+            padding: 24px 30px;
+            border-radius: 16px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.2);
+        }
+        .modal-content h2 {
+            margin-top: 0;
+            font-size: 1.3rem;
+            color: #2c3e66;
+        }
+        .modal-content label {
+            display: block;
+            margin-top: 12px;
+            font-weight: 500;
+            font-size: 0.9rem;
+            color: #495057;
+        }
+        .modal-content input,
+        .modal-content textarea {
+            width: 100%;
+            padding: 8px 12px;
+            border: 1px solid #ced4da;
+            border-radius: 8px;
+            margin: 4px 0 8px;
+            font-family: inherit;
+            font-size: 0.95rem;
+        }
+        .modal-content textarea {
+            min-height: 80px;
+            resize: vertical;
+        }
+        .modal-content input[type="file"] {
+            padding: 6px 0;
+            border: none;
+        }
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+            justify-content: flex-end;
+        }
+        .modal-buttons button {
+            padding: 8px 20px;
+            font-size: 0.9rem;
+        }
+        .modal-buttons .cancel-btn {
+            background: #6c757d;
+        }
+        .modal-buttons .cancel-btn:hover {
+            background: #5a6268;
+        }
+
+        @media (max-width: 600px) {
+            body { padding: 10px; }
+            .message { max-width: 95%; }
+            .chat-container { height: 98vh; border-radius: 16px; }
+            .chat-header { padding: 10px 14px; font-size: 1rem; }
+            .chat-header .header-left { gap: 6px; }
+            .user-controls { gap: 4px; }
+            .user-select { max-width: 100px; font-size: 0.75rem; }
+            .btn-small { font-size: 0.7rem; padding: 3px 8px; }
+            .agent-controls { padding: 4px 14px; gap: 4px; }
+            .agent-select { max-width: 100px; font-size: 0.75rem; }
+            .current-agent-label { font-size: 0.7rem; }
+            .input-area { padding: 8px 14px; gap: 6px; }
+            .input-area button { padding: 8px 14px; font-size: 0.8rem; }
+            textarea { font-size: 0.9rem; padding: 8px 14px; }
+            .chat-messages { padding: 12px 14px; }
+            .modal-content { padding: 20px; }
+            .working-memory-panel { padding: 8px 14px; max-height: 180px; }
+            .memory-item { font-size: 0.8rem; padding: 5px 10px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- Модальное окно для создания пользователя -->
+<div id="createUserModal" class="modal">
+    <div class="modal-content">
+        <h2>👤 Создать пользователя</h2>
+        <label for="userNameInput">Имя пользователя:</label>
+        <input type="text" id="userNameInput" placeholder="Введите имя">
+        <label for="preferencesFileInput">Файл предпочтений (опционально):</label>
+        <input type="file" id="preferencesFileInput" accept=".md">
+        <div class="modal-buttons">
+            <button class="cancel-btn" onclick="closeCreateUserModal()">Отмена</button>
+            <button onclick="createUser()">Создать</button>
+        </div>
+    </div>
+</div>
+
+<!-- Модальное окно для создания агента -->
+<div id="createAgentModal" class="modal">
+    <div class="modal-content">
+        <h2>🤖 Создать агента</h2>
+        <label for="agentNameInput">Имя агента:</label>
+        <input type="text" id="agentNameInput" placeholder="Введите имя агента">
+        <div class="modal-buttons">
+            <button class="cancel-btn" onclick="closeCreateAgentModal()">Отмена</button>
+            <button onclick="createAgent()">Создать</button>
+        </div>
+    </div>
+</div>
+
+<!-- Основной контейнер чата -->
+<div class="chat-container">
+    <!-- Шапка -->
+    <div class="chat-header">
+        <div class="header-left">
+            <span>🤖 LLM Agent</span>
+            <span class="agent-id" id="agentIdLabel">загрузка...</span>
+        </div>
+        <div class="user-controls">
+            <select id="userSelect" class="user-select" onchange="switchUser(this.value)">
+                <!-- Заполняется через JS -->
+            </select>
+            <button class="btn-small btn-success-small" onclick="showCreateUserModal()" title="Создать пользователя">+</button>
+            <button class="btn-small btn-danger-small" onclick="deleteCurrentUser()" title="Удалить пользователя">✕</button>
+        </div>
+    </div>
+
+    <!-- Панель управления агентами -->
+    <div class="agent-controls">
+        <div class="agent-controls-left">
+            <label for="agentSelect">🤖 Агент:</label>
+            <select id="agentSelect" class="agent-select" onchange="switchAgent(this.value)">
+                <!-- Заполняется через JS -->
+            </select>
+            <button class="btn-small btn-success-small" onclick="showCreateAgentModal()" title="Создать агента">+</button>
+            <button class="btn-small btn-danger-small" onclick="deleteCurrentAgent()" title="Удалить агента">✕</button>
+            <span class="current-agent-label" id="currentAgentDisplay">🤖 default</span>
+        </div>
+        <button class="memory-btn" onclick="toggleWorkingMemory()" title="Рабочая память">
+            🧠 Память <span class="badge" id="workingMemoryBadge">0</span>
+        </button>
+    </div>
+
+    <!-- Панель рабочей памяти -->
+    <div id="workingMemoryPanel" class="working-memory-panel" style="display:none;">
+        <div class="memory-header">
+            <span>🧠 Рабочая память (сводки завершённых диалогов)</span>
+            <button class="btn-small btn-danger-small" onclick="clearWorkingMemory()" title="Очистить память">🗑️ Очистить</button>
+        </div>
+        <div id="workingMemoryContent" class="memory-content">
+            <div class="empty-memory">Загрузка...</div>
+        </div>
+    </div>
+
+    <!-- Область сообщений -->
+    <div class="chat-messages" id="chatMessages">
+        <div class="message assistant">
+            <div class="message-bubble">Добро пожаловать! Отправьте сообщение, чтобы начать диалог.</div>
+        </div>
+    </div>
+
+    <!-- Область ввода -->
+    <div class="input-area">
+        <textarea id="messageInput" rows="1" placeholder="Введите сообщение..." onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+        <button id="sendBtn" onclick="sendMessage()">Отправить</button>
+        <button id="resetBtn" class="reset-btn" onclick="resetChat()">Очистить</button>
+    </div>
+</div>
+
+<script src="/static/chat.js"></script>
+</body>
+</html>
