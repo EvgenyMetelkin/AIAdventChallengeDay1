@@ -601,19 +601,15 @@ async function sendMessage() {
     input.style.height = 'auto';
     showTypingIndicator();
 
+    // Use streaming endpoint for real-time token display
+    const useStream = true;
+
     try {
-        const response = await fetch('/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message: message })
-        });
-        if (!response.ok) {
-            const errData = await response.json().catch(() => ({}));
-            throw new Error(errData.detail || `Server error: ${response.status}`);
+        if (useStream) {
+            await sendMessageStream(message);
+        } else {
+            await sendMessageRegular(message);
         }
-        const data = await response.json();
-        hideTypingIndicator();
-        renderMessages(data.history);
         // Обновляем информацию об агенте (количество сообщений)
         await loadAgents();
         updateWorkingMemoryDisplay();
@@ -634,6 +630,81 @@ async function sendMessage() {
         if (resetBtn) resetBtn.disabled = false;
         input.disabled = false;
         input.focus();
+    }
+}
+
+async function sendMessageRegular(message) {
+    const response = await fetch('/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message, user_id: currentUserId })
+    });
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error: ${response.status}`);
+    }
+    const data = await response.json();
+    hideTypingIndicator();
+    renderMessages(data.history);
+}
+
+async function sendMessageStream(message) {
+    const response = await fetch('/send/stream', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message, user_id: currentUserId })
+    });
+    
+    if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || `Server error: ${response.status}`);
+    }
+    
+    hideTypingIndicator();
+    
+    // Create a streaming message bubble
+    const container = document.getElementById('chatMessages');
+    const streamDiv = document.createElement('div');
+    streamDiv.className = 'message assistant';
+    const bubble = document.createElement('div');
+    bubble.className = 'message-bubble';
+    bubble.textContent = '';
+    streamDiv.appendChild(bubble);
+    container.appendChild(streamDiv);
+    scrollToBottom();
+    
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullContent = '';
+    
+    try {
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n');
+            
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+                        if (data.token) {
+                            fullContent += data.token;
+                            bubble.textContent = fullContent;
+                            scrollToBottom();
+                        }
+                        if (data.error) {
+                            bubble.innerHTML = `<span style="color:#721c24;">❌ ${escapeHtml(data.error)}</span>`;
+                        }
+                    } catch (e) {
+                        // skip malformed JSON lines
+                    }
+                }
+            }
+        }
+    } catch (err) {
+        bubble.innerHTML = `<span style="color:#721c24;">❌ Ошибка стриминга: ${escapeHtml(err.message)}</span>`;
     }
 }
 

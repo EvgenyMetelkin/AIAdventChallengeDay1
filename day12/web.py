@@ -1,13 +1,17 @@
 import os
+import json
+import asyncio
 import logging
 import shutil
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form, Depends
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from contextvars import ContextVar
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from agent import Agent
 from user import User, load_all_users, create_user, create_default_user
@@ -33,30 +37,98 @@ USERS_DIR = os.getenv("USERS_DIR", "users")
 if not LLM_API_KEY:
     raise RuntimeError("LLM_API_KEY not set in environment variables")
 
-# Глобальные объекты
-agent = None
-users = {}  # словарь user_id -> User
-current_user_id = None
+
+# ============================================================
+# Состояние приложения (вместо глобальных переменных)
+# ============================================================
+
+class AppState:
+    """Потокобезопасное состояние приложения."""
+    def __init__(self):
+        self.users: Dict[str, User] = {}
+        self.agent: Optional[Agent] = None
+        self._lock = asyncio.Lock()
+    
+    async def get_users_snapshot(self) -> Dict[str, User]:
+        """Безопасное чтение пользователей (снапшот)."""
+        async with self._lock:
+            return dict(self.users)
+    
+    async def get_user(self, user_id: str) -> Optional[User]:
+        async with self._lock:
+            return self.users.get(user_id)
+    
+    async def add_user(self, user: User) -> None:
+        async with self._lock:
+            self.users[user.user_id] = user
+    
+    async def remove_user(self, user_id: str) -> Optional[User]:
+        async with self._lock:
+            return self.users.pop(user_id, None)
+    
+    async def user_count(self) -> int:
+        async with self._lock:
+            return len(self.users)
+    
+    async def first_user_id(self) -> Optional[str]:
+        async with self._lock:
+            if self.users:
+                return next(iter(self.users.keys()))
+            return None
+    
+    async def set_agent(self, agent: Agent) -> None:
+        async with self._lock:
+            self.agent = agent
+    
+    async def get_agent(self) -> Optional[Agent]:
+        async with self._lock:
+            return self.agent
+
+
+# Контекстная переменная для текущего пользователя на запрос
+current_user_id_ctx: ContextVar[Optional[str]] = ContextVar('current_user_id', default=None)
+
+# Глобальный экземпляр состояния (инициализируется в lifespan)
+app_state = AppState()
+
+
+# ============================================================
+# Зависимости FastAPI
+# ============================================================
+
+async def get_state() -> AppState:
+    """Dependency: получить состояние приложения."""
+    return app_state
+
+
+async def get_current_user_id() -> Optional[str]:
+    """Dependency: получить ID текущего пользователя из контекста запроса."""
+    return current_user_id_ctx.get()
+
+
+# ============================================================
+# FastAPI приложение
+# ============================================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global agent, users, current_user_id
-    
     # Загружаем всех пользователей
-    users = load_all_users(USERS_DIR)
-    logger.info(f"Loaded {len(users)} users")
+    loaded_users = load_all_users(USERS_DIR)
+    async with app_state._lock:
+        app_state.users = loaded_users
+    logger.info(f"Loaded {len(loaded_users)} users")
     
     # Если пользователей нет, создаем дефолтного
-    if not users:
+    if not loaded_users:
         default_user = create_default_user(USERS_DIR)
-        users[default_user.user_id] = default_user
+        await app_state.add_user(default_user)
         logger.info(f"Created default user: {default_user.name} ({default_user.user_id})")
     
-    # Выбираем первого пользователя
-    current_user_id = list(users.keys())[0]
-    current_user = users[current_user_id]
+    # Выбираем первого пользователя как текущего по умолчанию
+    first_id = await app_state.first_user_id()
+    first_user = await app_state.get_user(first_id)
     
-    # Инициализируем агента с текущим пользователем
+    # Инициализируем агента с первым пользователем
     agent = Agent(
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
@@ -66,27 +138,45 @@ async def lifespan(app: FastAPI):
         verbose=VERBOSE,
         agent_id=AGENT_ID,
         history_dir=HISTORY_DIR,
-        user=current_user
+        user=first_user
     )
-    logger.info(f"Agent initialized with user: {current_user.name} ({current_user.user_id})")
+    await app_state.set_agent(agent)
+    logger.info(f"Agent initialized with user: {first_user.name} ({first_user.user_id})")
     
     yield
     
     # Сохраняем историю всех пользователей при завершении
-    for user in users.values():
-        user.save_agents()
-        user.save_working_memory()
+    async with app_state._lock:
+        for user in app_state.users.values():
+            user.save_agents()
+            user.save_working_memory()
     logger.info("Shutting down, all histories saved")
 
+
 app = FastAPI(lifespan=lifespan)
+
+# CORS middleware для разработки
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Шаблоны и статика
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Pydantic модели для запросов
+
+# ============================================================
+# Pydantic модели
+# ============================================================
+
 class MessageRequest(BaseModel):
     message: str
+    user_id: Optional[str] = None  # ID пользователя (если не указан, используется текущий)
+
 
 class SendResponse(BaseModel):
     assistant_reply: str
@@ -95,35 +185,74 @@ class SendResponse(BaseModel):
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
 
+
 class CreateAgentRequest(BaseModel):
     name: str
 
-# ------------------------------------------------------------
-# Эндпоинты API
-# ------------------------------------------------------------
+
+# ============================================================
+# Вспомогательная функция
+# ============================================================
+
+async def _resolve_user(state: AppState, user_id: Optional[str] = None) -> User:
+    """Разрешить пользователя: приоритет — явный user_id, затем контекст."""
+    if user_id:
+        user = await state.get_user(user_id)
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return user
+    
+    ctx_id = current_user_id_ctx.get()
+    if ctx_id:
+        user = await state.get_user(ctx_id)
+        if user:
+            return user
+    
+    # Fallback: первый пользователь
+    first_id = await state.first_user_id()
+    if first_id:
+        user = await state.get_user(first_id)
+        if user:
+            return user
+    
+    raise HTTPException(status_code=400, detail="No users available")
+
+
+# ============================================================
+# Эндпоинты
+# ============================================================
 
 @app.get("/")
-async def get_index(request: Request):
+async def get_index(request: Request, state: AppState = Depends(get_state)):
     """Главная страница чата"""
+    users_snapshot = await state.get_users_snapshot()
     users_list = []
-    for user in users.values():
+    for user in users_snapshot.values():
         user_dict = user.to_dict()
         user_dict["agent_count"] = len(user.agents) if user.agents else 0
         users_list.append(user_dict)
     
+    agent = await state.get_agent()
     current_agent_id = agent.user.current_agent_id if agent and agent.user else None
-    current_agent_name = agent.user.agents[current_agent_id]['name'] if (agent and agent.user and current_agent_id and current_agent_id in agent.user.agents) else "None"
+    current_agent_name = "None"
+    if agent and agent.user and current_agent_id and current_agent_id in agent.user.agents:
+        current_agent_name = agent.user.agents[current_agent_id]['name']
+    
+    ctx_user_id = current_user_id_ctx.get()
+    if not ctx_user_id and users_snapshot:
+        ctx_user_id = next(iter(users_snapshot.keys()))
     
     return templates.TemplateResponse(
         "index.html", 
         {
             "request": request,
             "users": users_list,
-            "current_user_id": current_user_id,
+            "current_user_id": ctx_user_id,
             "current_agent_id": current_agent_id,
             "current_agent_name": current_agent_name
         }
     )
+
 
 @app.get("/chat.js")
 async def serve_chat_js():
@@ -132,42 +261,41 @@ async def serve_chat_js():
         raise HTTPException(status_code=404, detail="chat.js not found")
     return FileResponse("static/chat.js", media_type="application/javascript")
 
+
 # ------------------------------------------------------------
 # Эндпоинты для управления пользователями
 # ------------------------------------------------------------
 
 @app.get("/api/users")
-async def get_users():
+async def get_users(state: AppState = Depends(get_state)):
     """Получить список всех пользователей."""
+    users_snapshot = await state.get_users_snapshot()
     users_list = []
-    for user in users.values():
+    for user in users_snapshot.values():
         user_dict = user.to_dict()
         user_dict["agent_count"] = len(user.agents) if user.agents else 0
         users_list.append(user_dict)
     
+    ctx_user_id = current_user_id_ctx.get()
+    if not ctx_user_id and users_snapshot:
+        ctx_user_id = next(iter(users_snapshot.keys()))
+    
     return {
         "users": users_list,
-        "current_user_id": current_user_id
+        "current_user_id": ctx_user_id
     }
+
 
 @app.post("/api/users")
 async def create_user_endpoint(
     name: str = Form(...),
-    preferences: UploadFile = File(None)
+    preferences: UploadFile = File(None),
+    state: AppState = Depends(get_state)
 ):
-    """
-    Создать нового пользователя.
-    
-    - **name**: Имя пользователя
-    - **preferences**: (опционально) MD файл с предпочтениями
-    """
-    global users, current_user_id, agent
-    
-    # Проверяем, что имя не пустое
+    """Создать нового пользователя."""
     if not name or not name.strip():
         raise HTTPException(status_code=400, detail="Name cannot be empty")
     
-    # Читаем предпочтения, если файл передан
     preferences_content = None
     if preferences:
         try:
@@ -176,57 +304,61 @@ async def create_user_endpoint(
         except Exception as e:
             raise HTTPException(status_code=400, detail=f"Invalid preferences file: {str(e)}")
     
-    # Создаем пользователя
     try:
         new_user = create_user(USERS_DIR, name.strip(), preferences_content)
-        users[new_user.user_id] = new_user
+        await state.add_user(new_user)
         
-        # Автоматически переключаемся на нового пользователя
-        current_user_id = new_user.user_id
-        agent.set_user(new_user)
+        # Устанавливаем контекст текущего пользователя
+        current_user_id_ctx.set(new_user.user_id)
+        
+        # Обновляем агента
+        agent = await state.get_agent()
+        if agent:
+            agent.set_user(new_user)
         
         logger.info(f"Created new user: {new_user.name} ({new_user.user_id})")
         
         return {
             "status": "ok",
             "user": new_user.to_dict(),
-            "current_user_id": current_user_id
+            "current_user_id": new_user.user_id
         }
     except Exception as e:
         logger.error(f"Error creating user: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating user: {str(e)}")
 
+
 @app.post("/api/users/{user_id}/switch")
-async def switch_user(user_id: str):
+async def switch_user(user_id: str, state: AppState = Depends(get_state)):
     """Переключиться на другого пользователя."""
-    global current_user_id, agent
-    
-    if user_id not in users:
+    user = await state.get_user(user_id)
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    current_user_id = user_id
-    agent.set_user(users[user_id])
+    # Устанавливаем контекст
+    current_user_id_ctx.set(user_id)
     
-    logger.info(f"Switched to user: {users[user_id].name} ({user_id})")
+    agent = await state.get_agent()
+    if agent:
+        agent.set_user(user)
+    
+    logger.info(f"Switched to user: {user.name} ({user_id})")
     
     return {
         "status": "ok",
-        "user": users[user_id].to_dict(),
-        "current_user_id": current_user_id
+        "user": user.to_dict(),
+        "current_user_id": user_id
     }
 
+
 @app.post("/api/users/{user_id}/reset")
-async def reset_user_history(user_id: str):
+async def reset_user_history(user_id: str, state: AppState = Depends(get_state)):
     """Сбросить историю диалога пользователя."""
-    if user_id not in users:
+    user = await state.get_user(user_id)
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    user = users[user_id]
     user.reset_current_history()
-    
-    # Если это текущий пользователь, обновляем агента
-    if user_id == current_user_id:
-        agent.user = user
     
     logger.info(f"Reset history for user: {user.name} ({user_id})")
     
@@ -235,49 +367,55 @@ async def reset_user_history(user_id: str):
         "message": f"History reset for user {user.name}"
     }
 
+
 @app.delete("/api/users/{user_id}")
-async def delete_user(user_id: str):
+async def delete_user(user_id: str, state: AppState = Depends(get_state)):
     """Удалить пользователя."""
-    global users, current_user_id, agent
-    
-    if user_id not in users:
+    user = await state.get_user(user_id)
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Не даем удалить последнего пользователя
-    if len(users) <= 1:
+    count = await state.user_count()
+    if count <= 1:
         raise HTTPException(status_code=400, detail="Cannot delete the last user")
     
-    user = users[user_id]
-    
-    # Если удаляем текущего пользователя, переключаемся на первого попавшегося
-    if user_id == current_user_id:
-        new_user_id = next(uid for uid in users.keys() if uid != user_id)
-        current_user_id = new_user_id
-        agent.set_user(users[new_user_id])
+    # Если удаляем текущего пользователя, переключаем контекст
+    ctx_id = current_user_id_ctx.get()
+    if user_id == ctx_id:
+        users_snapshot = await state.get_users_snapshot()
+        new_user_id = next(uid for uid in users_snapshot.keys() if uid != user_id)
+        current_user_id_ctx.set(new_user_id)
+        agent = await state.get_agent()
+        if agent:
+            new_user = await state.get_user(new_user_id)
+            if new_user:
+                agent.set_user(new_user)
     
     # Удаляем папку пользователя
     user_path = os.path.join(USERS_DIR, user_id)
     if os.path.exists(user_path):
         shutil.rmtree(user_path)
     
-    del users[user_id]
+    await state.remove_user(user_id)
     
     logger.info(f"Deleted user: {user.name} ({user_id})")
     
     return {
         "status": "ok",
         "message": f"User {user.name} deleted",
-        "current_user_id": current_user_id
+        "current_user_id": current_user_id_ctx.get()
     }
+
 
 # ------------------------------------------------------------
 # Эндпоинты для управления агентами
 # ------------------------------------------------------------
 
 @app.get("/api/agents")
-async def get_agents():
+async def get_agents(state: AppState = Depends(get_state)):
     """Получить список всех агентов текущего пользователя."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
@@ -297,10 +435,12 @@ async def get_agents():
         "current_agent_id": agent.user.current_agent_id
     }
 
+
 @app.post("/api/agents")
-async def create_agent(req: CreateAgentRequest):
+async def create_agent(req: CreateAgentRequest, state: AppState = Depends(get_state)):
     """Создать нового агента."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
@@ -325,10 +465,12 @@ async def create_agent(req: CreateAgentRequest):
         logger.error(f"Error creating agent: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error creating agent: {str(e)}")
 
+
 @app.post("/api/agents/{agent_id}/switch")
-async def switch_agent(agent_id: str):
+async def switch_agent(agent_id: str, state: AppState = Depends(get_state)):
     """Переключиться на другого агента с генерацией сводки."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
@@ -345,7 +487,6 @@ async def switch_agent(agent_id: str):
         }
     
     try:
-        # Переключаем агента с генерацией сводки
         summary = await agent.user.switch_agent(agent_id, agent)
         
         logger.info(f"Switched to agent: {agent.user.agents[agent_id]['name']} ({agent_id})")
@@ -364,10 +505,12 @@ async def switch_agent(agent_id: str):
         logger.error(f"Error switching agent: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error switching agent: {str(e)}")
 
+
 @app.delete("/api/agents/{agent_id}")
-async def delete_agent(agent_id: str):
+async def delete_agent(agent_id: str, state: AppState = Depends(get_state)):
     """Удалить агента."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
@@ -393,14 +536,16 @@ async def delete_agent(agent_id: str):
         logger.error(f"Error deleting agent: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error deleting agent: {str(e)}")
 
+
 # ------------------------------------------------------------
 # Эндпоинты для рабочей памяти
 # ------------------------------------------------------------
 
 @app.get("/api/working_memory")
-async def get_working_memory():
+async def get_working_memory(state: AppState = Depends(get_state)):
     """Получить содержимое рабочей памяти."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
@@ -412,10 +557,12 @@ async def get_working_memory():
         "user_name": agent.user.name
     }
 
+
 @app.delete("/api/working_memory")
-async def clear_working_memory():
+async def clear_working_memory(state: AppState = Depends(get_state)):
     """Очистить рабочую память."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
@@ -428,21 +575,25 @@ async def clear_working_memory():
         "message": "Working memory cleared"
     }
 
+
 # ------------------------------------------------------------
 # Основные эндпоинты для работы с чатом
 # ------------------------------------------------------------
 
 @app.get("/history")
-async def get_history():
+async def get_history(state: AppState = Depends(get_state)):
     """Вернуть историю текущего агента."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
     
     history = agent.user.get_current_history()
     current_agent_id = agent.user.current_agent_id
-    agent_name = agent.user.agents[current_agent_id]['name'] if current_agent_id and current_agent_id in agent.user.agents else "Unknown"
+    agent_name = "Unknown"
+    if current_agent_id and current_agent_id in agent.user.agents:
+        agent_name = agent.user.agents[current_agent_id]['name']
     
     return {
         "history": history,
@@ -452,33 +603,37 @@ async def get_history():
         "agent_name": agent_name
     }
 
+
 @app.post("/send")
-async def send_message(req: MessageRequest):
+async def send_message(req: MessageRequest, state: AppState = Depends(get_state)):
     """Отправить сообщение агенту и получить ответ."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
-    if not agent.user:
-        raise HTTPException(status_code=400, detail="No user selected")
+    
+    # Разрешаем пользователя
+    user = await _resolve_user(state, req.user_id)
+    agent.set_user(user)
     
     # Проверяем наличие текущего агента
-    if agent.user.current_agent_id is None or agent.user.current_agent_id not in agent.user.agents:
-        # Создаём агента по умолчанию
-        default_id = agent.user.add_agent("default")
-        agent.user.current_agent_id = default_id
-        agent.user.save_agents()
+    if user.current_agent_id is None or user.current_agent_id not in user.agents:
+        default_id = user.add_agent("default")
+        user.current_agent_id = default_id
+        user.save_agents()
     
     try:
         assistant_reply = await agent.send_message(req.message)
         
-        # Получаем обновленную историю
-        history = agent.user.get_current_history()
-        current_agent_id = agent.user.current_agent_id
-        agent_name = agent.user.agents[current_agent_id]['name'] if current_agent_id and current_agent_id in agent.user.agents else "Unknown"
+        history = user.get_current_history()
+        current_agent_id = user.current_agent_id
+        agent_name = "Unknown"
+        if current_agent_id and current_agent_id in user.agents:
+            agent_name = user.agents[current_agent_id]['name']
         
         return SendResponse(
             assistant_reply=assistant_reply,
             history=history,
-            user_id=agent.user.user_id,
+            user_id=user.user_id,
             agent_id=current_agent_id,
             agent_name=agent_name
         )
@@ -486,10 +641,55 @@ async def send_message(req: MessageRequest):
         logger.error(f"Error in /send: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Agent error: {str(e)}")
 
+
+@app.post("/send/stream")
+async def send_message_stream(req: MessageRequest, state: AppState = Depends(get_state)):
+    """Отправить сообщение и получить потоковый ответ через SSE."""
+    agent = await state.get_agent()
+    if not agent:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    
+    user = await _resolve_user(state, req.user_id)
+    agent.set_user(user)
+    
+    if user.current_agent_id is None or user.current_agent_id not in user.agents:
+        default_id = user.add_agent("default")
+        user.current_agent_id = default_id
+        user.save_agents()
+    
+    async def event_stream():
+        try:
+            full_response = ""
+            async for token in agent.send_message_stream(req.message):
+                full_response += token
+                yield f"data: {json.dumps({'token': token})}\n\n"
+            
+            # Сохраняем полный ответ в историю
+            history = user.get_current_history()
+            history.append({"role": "assistant", "content": full_response})
+            user.save_agents()
+            
+            yield f"data: {json.dumps({'done': True, 'agent_id': user.current_agent_id})}\n\n"
+        except Exception as e:
+            logger.error(f"Stream error: {str(e)}")
+            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+    )
+
+
 @app.post("/reset")
-async def reset_conversation():
+async def reset_conversation(state: AppState = Depends(get_state)):
     """Очистить историю диалога текущего агента."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     try:
         agent.reset_conversation()
@@ -503,9 +703,11 @@ async def reset_conversation():
         logger.error(f"Error in /reset: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Reset error: {str(e)}")
 
+
 @app.get("/info")
-async def get_agent_info():
+async def get_agent_info(state: AppState = Depends(get_state)):
     """Получить информацию об агенте."""
-    if agent is None:
+    agent = await state.get_agent()
+    if not agent:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     return agent.get_agent_info()

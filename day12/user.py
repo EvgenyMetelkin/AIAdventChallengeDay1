@@ -4,14 +4,47 @@ import uuid
 import re
 import shutil
 import logging
+import threading
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 from pathlib import Path
+from datetime import datetime
 
 from utils import parse_preferences_md, format_preferences_md, generate_summary
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_json(filepath: str, data: Any) -> None:
+    """Атомарная запись JSON: пишем во временный файл, затем rename."""
+    dirpath = os.path.dirname(filepath)
+    os.makedirs(dirpath, exist_ok=True)
+    tmp_path = filepath + ".tmp"
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp_path, filepath)  # атомарно на POSIX
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
+
+def _atomic_write_text(filepath: str, content: str) -> None:
+    """Атомарная запись текста: пишем во временный файл, затем rename."""
+    dirpath = os.path.dirname(filepath)
+    os.makedirs(dirpath, exist_ok=True)
+    tmp_path = filepath + ".tmp"
+    try:
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            f.write(content)
+        os.replace(tmp_path, filepath)
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
+
 
 @dataclass
 class User:
@@ -24,6 +57,7 @@ class User:
     current_agent_id: Optional[str] = None
     user_dir: Optional[str] = None
     preferences_file: Optional[str] = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
     
     def __post_init__(self):
         """Автоматическая загрузка данных при инициализации."""
@@ -83,17 +117,16 @@ class User:
             self.preferences = {"STYLE": "", "CONSTRAINTS": "", "CONTEXT": ""}
     
     def save_preferences(self):
-        """Сохранение предпочтений в MD файл."""
+        """Сохранение предпочтений в MD файл (атомарно, потокобезопасно)."""
         if not self.preferences_file:
             return
         
-        try:
-            os.makedirs(os.path.dirname(self.preferences_file), exist_ok=True)
-            content = format_preferences_md(self.preferences, self.name)
-            with open(self.preferences_file, 'w', encoding='utf-8') as f:
-                f.write(content)
-        except Exception as e:
-            logger.error(f"Error saving preferences for {self.name}: {e}")
+        with self._lock:
+            try:
+                content = format_preferences_md(self.preferences, self.name)
+                _atomic_write_text(self.preferences_file, content)
+            except Exception as e:
+                logger.error(f"Error saving preferences for {self.name}: {e}")
     
     def load_working_memory(self):
         """Загрузка рабочей памяти из файла."""
@@ -110,21 +143,21 @@ class User:
             self.working_memory = []
     
     def save_working_memory(self):
-        """Сохранение рабочей памяти в файл."""
+        """Сохранение рабочей памяти в файл (атомарно, потокобезопасно)."""
         if not self.user_dir:
             return
         
-        path = self._get_working_memory_path()
-        try:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, 'w', encoding='utf-8') as f:
-                json.dump({
+        with self._lock:
+            path = self._get_working_memory_path()
+            try:
+                payload = {
                     'user_id': self.user_id,
-                    'summaries': self.working_memory,
-                    'updated_at': str(__import__('datetime').datetime.now())
-                }, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error saving working memory for {self.name}: {e}")
+                    'summaries': list(self.working_memory),
+                    'updated_at': str(datetime.now())
+                }
+                _atomic_write_json(path, payload)
+            except Exception as e:
+                logger.error(f"Error saving working memory for {self.name}: {e}")
     
     def load_agents(self):
         """Загрузка всех агентов пользователя."""
@@ -175,29 +208,32 @@ class User:
             self.current_agent_id = list(self.agents.keys())[0]
     
     def save_agents(self):
-        """Сохранение всех агентов."""
+        """Сохранение всех агентов (атомарно, потокобезопасно)."""
         if not self.user_dir:
             return
-            
-        for agent_id, agent_data in self.agents.items():
-            try:
-                agent_dir = self._get_agent_dir(agent_id)
-                os.makedirs(agent_dir, exist_ok=True)
-                
-                # Сохраняем историю
-                history_path = self._get_agent_history_path(agent_id)
-                with open(history_path, 'w', encoding='utf-8') as f:
-                    json.dump(agent_data['history'], f, ensure_ascii=False, indent=2)
-                
-                # Сохраняем метаданные
-                metadata_path = self._get_agent_metadata_path(agent_id)
-                with open(metadata_path, 'w', encoding='utf-8') as f:
-                    json.dump({
-                        'name': agent_data['name'],
+        
+        with self._lock:
+            # Работаем с копией словаря для безопасности
+            agents_copy = dict(self.agents)
+            for agent_id, agent_data in agents_copy.items():
+                try:
+                    agent_dir = self._get_agent_dir(agent_id)
+                    os.makedirs(agent_dir, exist_ok=True)
+                    
+                    # Сохраняем историю (копия списка)
+                    history_path = self._get_agent_history_path(agent_id)
+                    history_copy = list(agent_data.get('history', []))
+                    _atomic_write_json(history_path, history_copy)
+                    
+                    # Сохраняем метаданные
+                    metadata_path = self._get_agent_metadata_path(agent_id)
+                    metadata_payload = {
+                        'name': agent_data.get('name', agent_id),
                         'created': agent_data.get('created', ''),
-                    }, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                logger.error(f"Error saving agent {agent_id}: {e}")
+                    }
+                    _atomic_write_json(metadata_path, metadata_payload)
+                except Exception as e:
+                    logger.error(f"Error saving agent {agent_id}: {e}")
     
     # === Управление агентами ===
     
@@ -206,7 +242,7 @@ class User:
         agent_id = uuid.uuid4().hex[:8]
         self.agents[agent_id] = {
             'name': name,
-            'created': str(__import__('datetime').datetime.now()),
+            'created': str(datetime.now()),
             'history': []
         }
         self.save_agents()
@@ -246,7 +282,6 @@ class User:
         # Генерируем сводку текущей истории, если она не пуста
         if current_history and agent_instance:
             try:
-                # Используем обновленную функцию generate_summary
                 summary = await generate_summary(current_history, agent_instance)
                 if summary:
                     self.working_memory.append(summary)
@@ -254,7 +289,6 @@ class User:
                     logger.info(f"Added summary to working memory for {self.name}: {summary[:100]}...")
             except Exception as e:
                 logger.error(f"Failed to generate summary for {self.name}: {e}")
-                # Продолжаем переключение даже если сводка не сгенерировалась
 
         # Переключаемся на нового агента
         self.current_agent_id = agent_id
@@ -277,7 +311,6 @@ class User:
         
         # Если удаляем текущего агента, переключаемся на другого
         if self.current_agent_id == agent_id:
-            # Выбираем первого попавшегося другого агента
             new_agent_id = next(aid for aid in self.agents.keys() if aid != agent_id)
             self.current_agent_id = new_agent_id
         
@@ -411,7 +444,6 @@ def load_all_users(user_dir: str) -> Dict[str, User]:
                 user_dir=user_path,
                 preferences_file=preferences_file
             )
-            # Загрузка произойдет автоматически в __post_init__
             users[user_id] = user
             logger.info(f"Loaded user: {name} ({user_id}) with {len(user.agents)} agents")
         except Exception as e:

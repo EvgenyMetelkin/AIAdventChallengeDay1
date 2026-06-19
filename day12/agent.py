@@ -3,7 +3,7 @@ import os
 import logging
 import uuid
 import glob
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, AsyncGenerator
 import httpx
 from user import User
 
@@ -255,6 +255,83 @@ class Agent:
                       f"completion {usage.get('completion_tokens',0)}, total {usage.get('total_tokens',0)}")
 
         return assistant_message
+
+    async def send_message_stream(self, user_message: str) -> AsyncGenerator[str, None]:
+        """
+        Отправить сообщение LLM и получать ответ по токенам (streaming).
+        
+        Args:
+            user_message: сообщение пользователя
+            
+        Yields:
+            str: токены ответа от LLM
+        """
+        if not self.user:
+            raise Exception("No user selected. Please select a user first.")
+        
+        # Проверяем наличие текущего агента
+        if self.user.current_agent_id is None or self.user.current_agent_id not in self.user.agents:
+            default_id = self.user.add_agent("default")
+            self.user.current_agent_id = default_id
+            self.user.save_agents()
+        
+        # Получаем текущую историю
+        history = self.user.get_current_history()
+        
+        # Добавляем сообщение пользователя в историю
+        history.append({"role": "user", "content": user_message})
+        
+        # Формируем messages
+        messages = []
+        system_prompt = self.user.get_system_prompt()
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        
+        for msg in history:
+            messages.append({"role": msg["role"], "content": msg["content"]})
+
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+            "stream": True
+        }
+
+        self._log(f"Streaming request to {url} with model {self.model}")
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                                delta = data['choices'][0].get('delta', {})
+                                content = delta.get('content', '')
+                                if content:
+                                    yield content
+                            except (json.JSONDecodeError, KeyError, IndexError):
+                                continue
+        except httpx.TimeoutException:
+            raise Exception(f"Streaming request timed out after {self.timeout} seconds.")
+        except httpx.HTTPStatusError as e:
+            try:
+                error_detail = e.response.json().get('error', {}).get('message', str(e))
+            except Exception:
+                error_detail = str(e)
+            raise Exception(f"HTTP error {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise Exception(f"Network error: {str(e)}")
 
     def get_agent_info(self) -> Dict:
         """Возвращает информацию об агенте."""

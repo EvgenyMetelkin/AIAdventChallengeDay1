@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.9.6, pytest-8.4.2, pluggy-1.6.0
+rootdir: /Users/metelkine-lt/VSCode/AIAdventChallengeDay1/day12
+plugins: asyncio-1.2.0, anyio-3.7.1
+asyncio: mode=strict, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 19 items
+
+test_agent.py ...................                                        [100%]
+
+============================== 19 passed in 0.07s ==============================
+
