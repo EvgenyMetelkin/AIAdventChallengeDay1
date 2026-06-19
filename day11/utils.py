@@ -1,6 +1,10 @@
 import os
 import re
-from typing import Dict, Optional
+import logging
+from typing import Dict, List, Optional
+
+# Настройка логирования
+logger = logging.getLogger(__name__)
 
 def parse_preferences_md(content: str) -> Dict[str, str]:
     """Парсинг MD файла с секциями ## STYLE, ## CONSTRAINTS, ## CONTEXT."""
@@ -44,9 +48,63 @@ def get_user_name_from_preferences(preferences_file: str) -> Optional[str]:
     if not os.path.exists(preferences_file):
         return None
     
-    with open(preferences_file, 'r', encoding='utf-8') as f:
-        content = f.read()
-        match = re.search(r"^# (.+)$", content, re.MULTILINE)
-        if match:
-            return match.group(1).strip()
+    try:
+        with open(preferences_file, 'r', encoding='utf-8') as f:
+            content = f.read()
+            match = re.search(r"^# (.+)$", content, re.MULTILINE)
+            if match:
+                return match.group(1).strip()
+    except Exception as e:
+        logger.error(f"Error reading preferences file {preferences_file}: {e}")
+    
     return None
+
+async def generate_summary(history: List[Dict], agent) -> str:
+    """
+    Генерирует краткую сводку истории диалога с помощью LLM.
+    
+    Args:
+        history: список сообщений в формате [{"role": "...", "content": "..."}]
+        agent: экземпляр Agent для выполнения запроса
+        
+    Returns:
+        str: краткая сводка диалога
+    """
+    if not history:
+        return ""
+    
+    # Формируем текст диалога для сводки
+    dialog_text = "\n".join(
+        f"{msg['role'].upper()}: {msg['content']}" 
+        for msg in history
+    )
+    
+    prompt = f"""Сделай краткую сводку следующего диалога, выдели основные решённые задачи и принятые решения.
+
+Диалог:
+{dialog_text}
+
+Сводка:"""
+    
+    # Сохраняем оригинальную историю
+    original_history = []
+    original_agent_id = None
+    
+    if agent.user:
+        original_agent_id = agent.user.current_agent_id
+        if original_agent_id and original_agent_id in agent.user.agents:
+            original_history = agent.user.agents[original_agent_id]['history'].copy()
+            # Временно очищаем историю, чтобы не сохранять запрос на сводку
+            agent.user.agents[original_agent_id]['history'] = []
+    
+    try:
+        # Отправляем запрос на генерацию сводки
+        response = await agent.send_message(prompt, save_to_history=False)
+        return response.strip()
+    except Exception as e:
+        logger.error(f"Failed to generate summary: {e}")
+        return f"[Failed to generate summary]"
+    finally:
+        # Восстанавливаем историю
+        if agent.user and original_agent_id and original_agent_id in agent.user.agents:
+            agent.user.agents[original_agent_id]['history'] = original_history

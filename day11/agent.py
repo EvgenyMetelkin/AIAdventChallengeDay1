@@ -7,6 +7,9 @@ from typing import List, Dict, Optional
 import httpx
 from user import User
 
+# Настройка логирования
+logger = logging.getLogger(__name__)
+
 class Agent:
     """Агент для взаимодействия с LLM через OpenAI‑совместимый API."""
 
@@ -57,20 +60,37 @@ class Agent:
         self._log(f"Switched to user: {user.name} ({user.user_id})")
 
     def reset_conversation(self) -> None:
-        """Сброс истории диалога текущего пользователя."""
+        """Сброс истории диалога текущего агента."""
         if self.user:
-            self.user.reset_history()
-            self._log(f"Conversation history reset for user {self.user.name}")
+            self.user.reset_current_history()
+            self._log(f"Conversation history reset for current agent")
         else:
             raise Exception("No user selected")
 
-    async def send_message(self, user_message: str) -> str:
-        """Отправить сообщение LLM, получить ответ (с сохранением истории)."""
+    async def send_message(self, user_message: str, save_to_history: bool = True) -> str:
+        """
+        Отправить сообщение LLM, получить ответ.
+        
+        Args:
+            user_message: сообщение пользователя
+            save_to_history: сохранять ли сообщения в историю (False для генерации сводки)
+        """
         if not self.user:
             raise Exception("No user selected. Please select a user first.")
         
-        # Добавляем сообщение пользователя в историю
-        self.user.history.append({"role": "user", "content": user_message})
+        # Проверяем наличие текущего агента
+        if self.user.current_agent_id is None or self.user.current_agent_id not in self.user.agents:
+            # Создаём агента по умолчанию
+            default_id = self.user.add_agent("default")
+            self.user.current_agent_id = default_id
+            self.user.save_agents()
+        
+        # Получаем текущую историю
+        history = self.user.get_current_history()
+        
+        # Добавляем сообщение пользователя в историю (если нужно)
+        if save_to_history:
+            history.append({"role": "user", "content": user_message})
         
         # Формируем messages для запроса
         messages = []
@@ -81,7 +101,7 @@ class Agent:
             messages.append({"role": "system", "content": system_prompt})
         
         # Добавляем историю (все сообщения пользователя и ассистента)
-        for msg in self.user.history:
+        for msg in history:
             messages.append({"role": msg["role"], "content": msg["content"]})
 
         url = f"{self.base_url}/chat/completions"
@@ -96,26 +116,26 @@ class Agent:
             "max_tokens": self.max_tokens
         }
 
-        # Вывод запроса в консоль (всегда, не только в verbose режиме)
-        print("\n" + "="*80)
-        print(f"[REQUEST] Sending to LLM: {url}")
-        print("-"*40)
-        print("MODEL:", self.model)
-        print(f"TEMPERATURE: {self.temperature}, MAX_TOKENS: {self.max_tokens}")
-        print("-"*40)
-        print("MESSAGES:")
-        for i, msg in enumerate(messages):
-            role = msg["role"]
-            content = msg["content"]
-            # Обрезаем длинные сообщения для читаемости
-            if len(content) > 200:
-                content_preview = content[:200] + "... (truncated)"
-            else:
-                content_preview = content
-            print(f"[{i}] {role.upper()}: {content_preview}")
-        print("="*80 + "\n")
+        # Вывод запроса в консоль (только если не режим генерации сводки)
+        if self.verbose or save_to_history:
+            print("\n" + "="*80)
+            print(f"[REQUEST] Sending to LLM: {url}")
+            print("-"*40)
+            print("MODEL:", self.model)
+            print(f"TEMPERATURE: {self.temperature}, MAX_TOKENS: {self.max_tokens}")
+            print("-"*40)
+            print("MESSAGES:")
+            for i, msg in enumerate(messages):
+                role = msg["role"]
+                content = msg["content"]
+                if len(content) > 200:
+                    content_preview = content[:200] + "... (truncated)"
+                else:
+                    content_preview = content
+                print(f"[{i}] {role.upper()}: {content_preview}")
+            print("="*80 + "\n")
 
-        self._log(f"Request to {url} with model {self.model}, history length {len(self.user.history)}")
+        self._log(f"Request to {url} with model {self.model}, history length {len(history)}")
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -138,11 +158,11 @@ class Agent:
         except (KeyError, IndexError) as e:
             raise Exception(f"Unexpected API response format: {data}")
 
-        # Добавляем ответ ассистента в историю
-        self.user.history.append({"role": "assistant", "content": assistant_message})
-        
-        # Сохраняем историю
-        self.user.save_history()
+        # Добавляем ответ ассистента в историю (если нужно)
+        if save_to_history:
+            history.append({"role": "assistant", "content": assistant_message})
+            # Сохраняем историю
+            self.user.save_agents()
 
         if self.verbose and 'usage' in data:
             usage = data['usage']

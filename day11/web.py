@@ -7,6 +7,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from typing import Optional, List
 from dotenv import load_dotenv
 from agent import Agent
 from user import User, load_all_users, create_user, create_default_user
@@ -73,7 +74,8 @@ async def lifespan(app: FastAPI):
     
     # Сохраняем историю всех пользователей при завершении
     for user in users.values():
-        user.save_history()
+        user.save_agents()
+        user.save_working_memory()
     logger.info("Shutting down, all histories saved")
 
 app = FastAPI(lifespan=lifespan)
@@ -90,6 +92,11 @@ class SendResponse(BaseModel):
     assistant_reply: str
     history: list
     user_id: str
+    agent_id: Optional[str] = None
+    agent_name: Optional[str] = None
+
+class CreateAgentRequest(BaseModel):
+    name: str
 
 # ------------------------------------------------------------
 # Эндпоинты API
@@ -98,13 +105,23 @@ class SendResponse(BaseModel):
 @app.get("/")
 async def get_index(request: Request):
     """Главная страница чата"""
-    users_list = [user.to_dict() for user in users.values()]
+    users_list = []
+    for user in users.values():
+        user_dict = user.to_dict()
+        user_dict["agent_count"] = len(user.agents) if user.agents else 0
+        users_list.append(user_dict)
+    
+    current_agent_id = agent.user.current_agent_id if agent and agent.user else None
+    current_agent_name = agent.user.agents[current_agent_id]['name'] if (agent and agent.user and current_agent_id and current_agent_id in agent.user.agents) else "None"
+    
     return templates.TemplateResponse(
         "index.html", 
         {
             "request": request,
             "users": users_list,
-            "current_user_id": current_user_id
+            "current_user_id": current_user_id,
+            "current_agent_id": current_agent_id,
+            "current_agent_name": current_agent_name
         }
     )
 
@@ -115,11 +132,21 @@ async def serve_chat_js():
         raise HTTPException(status_code=404, detail="chat.js not found")
     return FileResponse("static/chat.js", media_type="application/javascript")
 
+# ------------------------------------------------------------
+# Эндпоинты для управления пользователями
+# ------------------------------------------------------------
+
 @app.get("/api/users")
 async def get_users():
     """Получить список всех пользователей."""
+    users_list = []
+    for user in users.values():
+        user_dict = user.to_dict()
+        user_dict["agent_count"] = len(user.agents) if user.agents else 0
+        users_list.append(user_dict)
+    
     return {
-        "users": [user.to_dict() for user in users.values()],
+        "users": users_list,
         "current_user_id": current_user_id
     }
 
@@ -195,7 +222,7 @@ async def reset_user_history(user_id: str):
         raise HTTPException(status_code=404, detail="User not found")
     
     user = users[user_id]
-    user.reset_history()
+    user.reset_current_history()
     
     # Если это текущий пользователь, обновляем агента
     if user_id == current_user_id:
@@ -243,18 +270,186 @@ async def delete_user(user_id: str):
         "current_user_id": current_user_id
     }
 
-@app.get("/history")
-async def get_history():
-    """Вернуть текущую историю диалога."""
+# ------------------------------------------------------------
+# Эндпоинты для управления агентами
+# ------------------------------------------------------------
+
+@app.get("/api/agents")
+async def get_agents():
+    """Получить список всех агентов текущего пользователя."""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    if not agent.user:
+        raise HTTPException(status_code=400, detail="No user selected")
+    
+    agents_list = []
+    for agent_id, data in agent.user.agents.items():
+        agents_list.append({
+            "agent_id": agent_id,
+            "name": data["name"],
+            "history_length": len(data["history"]),
+            "created": data.get("created", ""),
+            "is_current": agent_id == agent.user.current_agent_id
+        })
+    
+    return {
+        "agents": agents_list,
+        "current_agent_id": agent.user.current_agent_id
+    }
+
+@app.post("/api/agents")
+async def create_agent(req: CreateAgentRequest):
+    """Создать нового агента."""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    if not agent.user:
+        raise HTTPException(status_code=400, detail="No user selected")
+    
+    if not req.name or not req.name.strip():
+        raise HTTPException(status_code=400, detail="Agent name cannot be empty")
+    
+    try:
+        new_agent_id = agent.user.add_agent(req.name.strip())
+        agent.user.current_agent_id = new_agent_id
+        agent.user.save_agents()
+        
+        logger.info(f"Created new agent: {req.name} ({new_agent_id}) for user {agent.user.name}")
+        
+        return {
+            "status": "ok",
+            "agent_id": new_agent_id,
+            "name": req.name,
+            "current_agent_id": new_agent_id
+        }
+    except Exception as e:
+        logger.error(f"Error creating agent: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error creating agent: {str(e)}")
+
+@app.post("/api/agents/{agent_id}/switch")
+async def switch_agent(agent_id: str):
+    """Переключиться на другого агента с генерацией сводки."""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    if not agent.user:
+        raise HTTPException(status_code=400, detail="No user selected")
+    
+    if agent_id not in agent.user.agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    if agent_id == agent.user.current_agent_id:
+        return {
+            "status": "ok",
+            "current_agent_id": agent_id,
+            "summary_generated": False,
+            "message": "Already on this agent"
+        }
+    
+    try:
+        # Переключаем агента с генерацией сводки
+        summary = await agent.user.switch_agent(agent_id, agent)
+        
+        logger.info(f"Switched to agent: {agent.user.agents[agent_id]['name']} ({agent_id})")
+        logger.info(f"Summary generated: {bool(summary)}")
+        
+        return {
+            "status": "ok",
+            "current_agent_id": agent_id,
+            "summary_generated": bool(summary),
+            "summary_preview": summary[:200] + "..." if summary and len(summary) > 200 else summary,
+            "working_memory_length": len(agent.user.working_memory)
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error switching agent: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error switching agent: {str(e)}")
+
+@app.delete("/api/agents/{agent_id}")
+async def delete_agent(agent_id: str):
+    """Удалить агента."""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    if not agent.user:
+        raise HTTPException(status_code=400, detail="No user selected")
+    
+    if agent_id not in agent.user.agents:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    
+    try:
+        success = agent.user.delete_agent(agent_id)
+        if not success:
+            raise HTTPException(status_code=400, detail="Cannot delete the last agent")
+        
+        logger.info(f"Deleted agent: {agent_id} for user {agent.user.name}")
+        
+        return {
+            "status": "ok",
+            "message": "Agent deleted",
+            "current_agent_id": agent.user.current_agent_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting agent: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error deleting agent: {str(e)}")
+
+# ------------------------------------------------------------
+# Эндпоинты для рабочей памяти
+# ------------------------------------------------------------
+
+@app.get("/api/working_memory")
+async def get_working_memory():
+    """Получить содержимое рабочей памяти."""
     if agent is None:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
     
     return {
-        "history": agent.user.history,
+        "working_memory": agent.user.working_memory,
+        "count": len(agent.user.working_memory),
         "user_id": agent.user.user_id,
         "user_name": agent.user.name
+    }
+
+@app.delete("/api/working_memory")
+async def clear_working_memory():
+    """Очистить рабочую память."""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    if not agent.user:
+        raise HTTPException(status_code=400, detail="No user selected")
+    
+    agent.user.working_memory = []
+    agent.user.save_working_memory()
+    
+    return {
+        "status": "ok",
+        "message": "Working memory cleared"
+    }
+
+# ------------------------------------------------------------
+# Основные эндпоинты для работы с чатом
+# ------------------------------------------------------------
+
+@app.get("/history")
+async def get_history():
+    """Вернуть историю текущего агента."""
+    if agent is None:
+        raise HTTPException(status_code=503, detail="Agent not initialized")
+    if not agent.user:
+        raise HTTPException(status_code=400, detail="No user selected")
+    
+    history = agent.user.get_current_history()
+    current_agent_id = agent.user.current_agent_id
+    agent_name = agent.user.agents[current_agent_id]['name'] if current_agent_id and current_agent_id in agent.user.agents else "Unknown"
+    
+    return {
+        "history": history,
+        "user_id": agent.user.user_id,
+        "user_name": agent.user.name,
+        "agent_id": current_agent_id,
+        "agent_name": agent_name
     }
 
 @app.post("/send")
@@ -265,12 +460,27 @@ async def send_message(req: MessageRequest):
     if not agent.user:
         raise HTTPException(status_code=400, detail="No user selected")
     
+    # Проверяем наличие текущего агента
+    if agent.user.current_agent_id is None or agent.user.current_agent_id not in agent.user.agents:
+        # Создаём агента по умолчанию
+        default_id = agent.user.add_agent("default")
+        agent.user.current_agent_id = default_id
+        agent.user.save_agents()
+    
     try:
         assistant_reply = await agent.send_message(req.message)
+        
+        # Получаем обновленную историю
+        history = agent.user.get_current_history()
+        current_agent_id = agent.user.current_agent_id
+        agent_name = agent.user.agents[current_agent_id]['name'] if current_agent_id and current_agent_id in agent.user.agents else "Unknown"
+        
         return SendResponse(
             assistant_reply=assistant_reply,
-            history=agent.user.history,
-            user_id=agent.user.user_id
+            history=history,
+            user_id=agent.user.user_id,
+            agent_id=current_agent_id,
+            agent_name=agent_name
         )
     except Exception as e:
         logger.error(f"Error in /send: {str(e)}")
@@ -278,7 +488,7 @@ async def send_message(req: MessageRequest):
 
 @app.post("/reset")
 async def reset_conversation():
-    """Очистить историю диалога текущего пользователя."""
+    """Очистить историю диалога текущего агента."""
     if agent is None:
         raise HTTPException(status_code=503, detail="Agent not initialized")
     try:
@@ -286,7 +496,8 @@ async def reset_conversation():
         return {
             "status": "ok", 
             "message": "History cleared",
-            "user_id": agent.user.user_id if agent.user else None
+            "user_id": agent.user.user_id if agent.user else None,
+            "agent_id": agent.user.current_agent_id if agent.user else None
         }
     except Exception as e:
         logger.error(f"Error in /reset: {str(e)}")
