@@ -233,19 +233,20 @@ class User:
     async def switch_agent(self, agent_id: str, agent_instance) -> str:
         """
         Переключение на другого агента с генерацией сводки текущей истории.
-        
+    
         Returns:
             str: сгенерированная сводка (или пустая строка)
         """
         if agent_id not in self.agents:
             raise ValueError(f"Agent {agent_id} not found")
-        
+
         current_history = self.get_current_history()
         summary = ""
-        
+
         # Генерируем сводку текущей истории, если она не пуста
         if current_history and agent_instance:
             try:
+                # Используем обновленную функцию generate_summary
                 summary = await generate_summary(current_history, agent_instance)
                 if summary:
                     self.working_memory.append(summary)
@@ -254,11 +255,11 @@ class User:
             except Exception as e:
                 logger.error(f"Failed to generate summary for {self.name}: {e}")
                 # Продолжаем переключение даже если сводка не сгенерировалась
-        
+
         # Переключаемся на нового агента
         self.current_agent_id = agent_id
         self.save_agents()
-        
+    
         return summary
     
     def delete_agent(self, agent_id: str) -> bool:

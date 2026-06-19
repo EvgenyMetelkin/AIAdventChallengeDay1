@@ -79,6 +79,7 @@ async def generate_summary(history: List[Dict], agent) -> str:
         for msg in history
     )
     
+    # Создаём специальный промпт для генерации сводки
     prompt = f"""Сделай краткую сводку следующего диалога, выдели основные решённые задачи и принятые решения.
 
 Диалог:
@@ -86,25 +87,12 @@ async def generate_summary(history: List[Dict], agent) -> str:
 
 Сводка:"""
     
-    # Сохраняем оригинальную историю
-    original_history = []
-    original_agent_id = None
-    
-    if agent.user:
-        original_agent_id = agent.user.current_agent_id
-        if original_agent_id and original_agent_id in agent.user.agents:
-            original_history = agent.user.agents[original_agent_id]['history'].copy()
-            # Временно очищаем историю, чтобы не сохранять запрос на сводку
-            agent.user.agents[original_agent_id]['history'] = []
-    
     try:
-        # Отправляем запрос на генерацию сводки
-        response = await agent.send_message(prompt, save_to_history=False)
+        # Используем специальный метод для генерации сводки
+        # Передаём промпт напрямую без использования истории
+        response = await agent.send_message_without_history(prompt)
         return response.strip()
     except Exception as e:
         logger.error(f"Failed to generate summary: {e}")
-        return f"[Failed to generate summary]"
-    finally:
-        # Восстанавливаем историю
-        if agent.user and original_agent_id and original_agent_id in agent.user.agents:
-            agent.user.agents[original_agent_id]['history'] = original_history
+        # Возвращаем базовую сводку в случае ошибки
+        return f"[Сводка не сгенерирована: {str(e)}]"

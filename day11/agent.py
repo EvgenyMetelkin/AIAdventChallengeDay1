@@ -67,6 +67,91 @@ class Agent:
         else:
             raise Exception("No user selected")
 
+    async def send_message_without_history(self, message: str) -> str:
+        """
+        Отправить сообщение LLM без использования истории.
+        Используется для генерации сводок и других служебных задач.
+        
+        Args:
+            message: сообщение для отправки
+            
+        Returns:
+            str: ответ LLM
+        """
+        if not self.user:
+            raise Exception("No user selected. Please select a user first.")
+        
+        # Формируем messages для запроса - только системный промпт и текущее сообщение
+        messages = []
+        
+        # Добавляем system промпт из предпочтений
+        system_prompt = self.user.get_system_prompt()
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        
+        # Добавляем только текущее сообщение (без истории)
+        messages.append({"role": "user", "content": message})
+
+        url = f"{self.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens
+        }
+
+        if self.verbose:
+            print("\n" + "="*80)
+            print(f"[REQUEST] Sending to LLM (without history): {url}")
+            print("-"*40)
+            print("MODEL:", self.model)
+            print(f"TEMPERATURE: {self.temperature}, MAX_TOKENS: {self.max_tokens}")
+            print("-"*40)
+            print("MESSAGES:")
+            for i, msg in enumerate(messages):
+                role = msg["role"]
+                content = msg["content"]
+                if len(content) > 200:
+                    content_preview = content[:200] + "... (truncated)"
+                else:
+                    content_preview = content
+                print(f"[{i}] {role.upper()}: {content_preview}")
+            print("="*80 + "\n")
+
+        self._log(f"Request to {url} with model {self.model} (without history)")
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.TimeoutException:
+            raise Exception(f"Request timed out after {self.timeout} seconds.")
+        except httpx.HTTPStatusError as e:
+            try:
+                error_detail = e.response.json().get('error', {}).get('message', str(e))
+            except Exception:
+                error_detail = str(e)
+            raise Exception(f"HTTP error {e.response.status_code}: {error_detail}")
+        except httpx.RequestError as e:
+            raise Exception(f"Network error: {str(e)}")
+
+        try:
+            assistant_message = data['choices'][0]['message']['content']
+        except (KeyError, IndexError) as e:
+            raise Exception(f"Unexpected API response format: {data}")
+
+        if self.verbose and 'usage' in data:
+            usage = data['usage']
+            self._log(f"Token usage: prompt {usage.get('prompt_tokens',0)}, "
+                      f"completion {usage.get('completion_tokens',0)}, total {usage.get('total_tokens',0)}")
+
+        return assistant_message
+
     async def send_message(self, user_message: str, save_to_history: bool = True) -> str:
         """
         Отправить сообщение LLM, получить ответ.
