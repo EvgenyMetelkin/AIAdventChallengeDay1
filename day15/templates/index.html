@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Agent — IDE</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ============================================================
+     ACTIVITY BAR (far left)
+     ============================================================ -->
+<div class="activity-bar" id="activityBar">
+    <div class="activity-icon active" data-panel="explorer" title="Explorer (Ctrl+Shift+E)">
+        📁
+    </div>
+    <div class="activity-icon" data-panel="search" title="Search (Ctrl+Shift+F)">
+        🔍
+    </div>
+    <div class="activity-icon" data-panel="git" title="Source Control (Ctrl+Shift+G)">
+        📊
+    </div>
+    <div class="spacer"></div>
+    <div class="activity-icon" data-panel="swarm" title="Swarm Mode">
+        🔄
+    </div>
+    <div class="spacer"></div>
+    <div class="activity-icon" data-panel="settings" title="Настройки">
+        ⚙️
+    </div>
+</div>
+
+<!-- ============================================================
+     SIDEBAR (left panel)
+     ============================================================ -->
+<div class="sidebar" id="sidebar">
+    <!-- Explorer panel -->
+    <div class="sidebar-panel active" id="panel-explorer">
+        <div class="sidebar-header">
+            <span>ПРОВОДНИК</span>
+            <div class="sidebar-actions">
+                <button class="icon-btn" onclick="showCreateUserModal()" title="Новый пользователь">👤+</button>
+                <button class="icon-btn" onclick="showCreateAgentModal()" title="Новый агент">🤖+</button>
+            </div>
+        </div>
+        <div class="sidebar-tree" id="explorerTree">
+            <!-- Filled by JS -->
+        </div>
+    </div>
+    <!-- Search panel (placeholder) -->
+    <div class="sidebar-panel" id="panel-search">
+        <div class="sidebar-header"><span>ПОИСК</span></div>
+        <div class="sidebar-empty">Поиск не реализован</div>
+    </div>
+    <!-- Git panel (placeholder) -->
+    <div class="sidebar-panel" id="panel-git">
+        <div class="sidebar-header"><span>КОНТРОЛЬ ВЕРСИЙ</span></div>
+        <div class="sidebar-empty">Нет изменений</div>
+    </div>
+    <!-- Swarm panel -->
+    <div class="sidebar-panel" id="panel-swarm">
+        <div class="sidebar-header">
+            <span>РОЙ</span>
+            <div class="sidebar-actions">
+                <button class="icon-btn" onclick="showCreateSwarmModal()" title="Новая задача">📋+</button>
+            </div>
+        </div>
+        <div class="sidebar-tree" id="swarmTaskList">
+            <div class="sidebar-empty" id="swarmEmpty">Нет активных задач</div>
+        </div>
+    </div>
+    <!-- Settings panel -->
+    <div class="sidebar-panel" id="panel-settings">
+        <div class="sidebar-header"><span>НАСТРОЙКИ</span></div>
+        <div class="settings-content" id="settingsContent">
+            <div class="settings-block">
+                <div class="settings-label">Модель</div>
+                <div class="settings-value" id="settingsModel">загрузка...</div>
+            </div>
+            <div class="settings-block">
+                <div class="settings-label">
+                    📋 Инварианты
+                    <span class="settings-hint">Изменения повлияют только на новые задачи</span>
+                </div>
+                <textarea class="settings-textarea" id="invariantsEditor" rows="8" placeholder="- Правило 1&#10;- Правило 2&#10;..."></textarea>
+                <div class="settings-actions">
+                    <button class="settings-btn primary" onclick="saveInvariants()">💾 Сохранить</button>
+                    <span class="settings-status" id="invariantsStatus"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     MAIN EDITOR AREA
+     ============================================================ -->
+<div class="editor-area" id="editorArea">
+    <!-- Tab bar -->
+    <div class="tab-bar" id="tabBar">
+        <!-- Filled by JS -->
+    </div>
+    <!-- Editor content (chat messages) -->
+    <div class="editor-content" id="editorContent">
+        <!-- Swarm task view (hidden by default) -->
+        <div class="swarm-view" id="swarmView" style="display:none;">
+            <!-- Task header -->
+            <div class="swarm-header">
+                <button class="icon-btn" onclick="closeSwarmView()" title="Назад в чат">← Назад</button>
+                <span class="swarm-task-title" id="swarmTaskTitle"></span>
+                <span class="swarm-task-id" id="swarmTaskId"></span>
+                <div class="swarm-header-actions">
+                    <button class="swarm-btn danger" onclick="cancelSwarmTask()" title="Отменить задачу">✕ Отмена</button>
+                </div>
+            </div>
+            <!-- Stage progress bar -->
+            <div class="swarm-progress">
+                <div class="swarm-progress-bar">
+                    <div class="swarm-progress-fill" id="swarmProgressFill"></div>
+                </div>
+                <div class="swarm-stages" id="swarmStages">
+                    <span class="swarm-stage" data-stage="idle">Готово</span>
+                    <span class="swarm-stage-arrow">→</span>
+                    <span class="swarm-stage" data-stage="planning">План</span>
+                    <span class="swarm-stage-arrow">→</span>
+                    <span class="swarm-stage" data-stage="executing">Код</span>
+                    <span class="swarm-stage-arrow">→</span>
+                    <span class="swarm-stage" data-stage="validating">Проверка</span>
+                    <span class="swarm-stage-arrow">→</span>
+                    <span class="swarm-stage" data-stage="done">Готово</span>
+                </div>
+            </div>
+            <!-- Current stage info -->
+            <div class="swarm-current-stage" id="swarmCurrentStage">
+                <div class="swarm-stage-icon" id="swarmStageIcon">🔄</div>
+                <div class="swarm-stage-info">
+                    <div class="swarm-stage-label" id="swarmStageLabel">Готово</div>
+                    <div class="swarm-stage-desc" id="swarmStageDesc">Задача создана, готова к запуску.</div>
+                </div>
+            </div>
+            <!-- Interactive questions area (Day 15) -->
+            <div class="swarm-questions" id="swarmQuestions" style="display:none;">
+                <div class="swarm-questions-header">
+                    <span>❓ Уточняющие вопросы</span>
+                    <span class="swarm-questions-progress" id="swarmQuestionsProgress"></span>
+                </div>
+                <div class="swarm-questions-list" id="swarmQuestionsList"></div>
+                <div class="swarm-questions-hint" id="swarmQuestionsHint">
+                    Введите ответ в поле ввода внизу и нажмите Отправить
+                </div>
+            </div>
+            <!-- Plan display area (Day 15) -->
+            <div class="swarm-plan-area" id="swarmPlanArea" style="display:none;">
+                <div class="swarm-plan-header">
+                    <span>📋 План</span>
+                </div>
+                <div class="swarm-plan-content" id="swarmPlanContent"></div>
+            </div>
+            <!-- Summary / content area -->
+            <div class="swarm-summary" id="swarmSummary">
+                <div class="swarm-summary-header">
+                    <span id="swarmSummaryTitle">Описание задачи</span>
+                    <div class="swarm-summary-actions">
+                        <button class="swarm-btn small" onclick="toggleSwarmFullOutput()" id="swarmFullBtn">📄 Весь вывод</button>
+                        <button class="swarm-btn small" onclick="viewSwarmArtifacts()">📁 Артефакты</button>
+                    </div>
+                </div>
+                <div class="swarm-summary-content" id="swarmSummaryContent"></div>
+                <div class="swarm-full-output" id="swarmFullOutput" style="display:none;"></div>
+            </div>
+            <!-- Invariant check results -->
+            <div class="swarm-checks" id="swarmChecks" style="display:none;">
+                <div class="swarm-checks-header">
+                    <span>🛡 Проверка инвариантов</span>
+                    <span class="swarm-checks-status" id="swarmChecksStatus"></span>
+                </div>
+                <div class="swarm-checks-list" id="swarmChecksList"></div>
+            </div>
+            <!-- Invariants panel -->
+            <div class="swarm-invariants" id="swarmInvariants" style="display:none;">
+                <div class="swarm-invariants-header">
+                    <span>📋 Инварианты задачи</span>
+                    <span class="swarm-invariants-count" id="swarmInvariantsCount"></span>
+                </div>
+                <ul class="swarm-invariants-list" id="swarmInvariantsList"></ul>
+            </div>
+            <!-- Control buttons -->
+            <div class="swarm-controls" id="swarmControls">
+                <button class="swarm-btn primary" id="swarmBtnConfirm" onclick="swarmConfirm()">✓ Подтвердить</button>
+                <button class="swarm-btn" id="swarmBtnStartPlanning" onclick="swarmAction('start_planning')">▶ Начать планирование</button>
+                <button class="swarm-btn" id="swarmBtnStartExecution" onclick="swarmAction('start_execution')" style="display:none;">▶ Начать выполнение</button>
+                <button class="swarm-btn" id="swarmBtnStartValidation" onclick="swarmAction('start_validation')" style="display:none;">▶ Начать валидацию</button>
+                <button class="swarm-btn" id="swarmBtnFinish" onclick="swarmAction('finish')" style="display:none;">▶ Завершить</button>
+                <button class="swarm-btn" id="swarmBtnRefine" onclick="swarmRefinePlan()" style="display:none;">🔄 Уточнить план</button>
+                <button class="swarm-btn" id="swarmBtnRetry" onclick="swarmAction('retry')" style="display:none;">↺ Повторить этап</button>
+                <button class="swarm-btn warn" id="swarmBtnRestartStage" onclick="swarmAction('restart_stage')" style="display:none;">↺ Перезапустить этап (инварианты)</button>
+                <button class="swarm-btn" id="swarmBtnPause" onclick="swarmAction('pause')">⏸ Пауза</button>
+                <button class="swarm-btn" id="swarmBtnResume" onclick="swarmAction('resume')" style="display:none;">▶ Продолжить</button>
+            </div>
+            <!-- Artifacts viewer overlay -->
+            <div class="swarm-artifacts-view" id="swarmArtifactsView" style="display:none;">
+                <div class="swarm-artifacts-header">
+                    <span>📁 Артефакты</span>
+                    <button class="icon-btn" onclick="closeSwarmArtifacts()">✕</button>
+                </div>
+                <div class="swarm-artifacts-tree" id="swarmArtifactsTree"></div>
+                <div class="swarm-artifact-content" id="swarmArtifactContent">
+                    <div class="panel-empty">Выберите файл для просмотра</div>
+                </div>
+            </div>
+        </div>
+        <div class="welcome-screen" id="welcomeScreen">
+            <div class="welcome-logo">🤖</div>
+            <h1>LLM Agent IDE</h1>
+            <p>Многопользовательский чат с агентами и рабочей памятью</p>
+            <div class="welcome-actions">
+                <button onclick="showCreateAgentModal()">Новая сессия агента</button>
+                <button onclick="document.getElementById('messageInput').focus()">Начать чат</button>
+            </div>
+        </div>
+        <div class="chat-messages" id="chatMessages" style="display:none;">
+            <!-- Filled by JS -->
+        </div>
+        <!-- Stream bubble (shown during streaming) -->
+        <div class="stream-bubble" id="streamBubble" style="display:none;">
+            <div class="message assistant">
+                <div class="message-bubble" id="streamContent"></div>
+            </div>
+        </div>
+    </div>
+    <!-- Input area (terminal-like) -->
+    <div class="input-area" id="inputArea">
+        <span class="prompt">❯</span>
+        <textarea id="messageInput" rows="1" placeholder="Спросите что угодно... (Enter — отправить, Shift+Enter — новая строка)"
+            onkeydown="if(event.key==='Enter' && !event.shiftKey){event.preventDefault();sendMessage();}"></textarea>
+        <button id="sendBtn" onclick="sendMessage()" title="Отправить (Enter)">⏎</button>
+        <button id="resetBtn" class="reset-btn" onclick="resetChat()" title="Очистить историю">🗑</button>
+    </div>
+</div>
+
+<!-- ============================================================
+     BOTTOM PANEL
+     ============================================================ -->
+<div class="bottom-panel" id="bottomPanel" style="display:none;">
+    <div class="panel-tabs" id="panelTabs">
+        <div class="panel-tab active" data-panel="problems">PROBLEMS <span class="badge" id="problemsBadge">0</span></div>
+        <div class="panel-tab" data-panel="output">OUTPUT</div>
+        <div class="panel-tab" data-panel="terminal">TERMINAL</div>
+        <div class="panel-tab" data-panel="memory">MEMORY <span class="badge" id="memoryBadge">0</span></div>
+        <div class="panel-actions">
+            <button class="icon-btn" onclick="toggleBottomPanel()" title="Close panel">✕</button>
+        </div>
+    </div>
+    <div class="panel-content" id="panelContent">
+        <div class="panel-pane active" id="pane-problems">
+            <div class="panel-empty">Проблем не обнаружено ✨</div>
+        </div>
+        <div class="panel-pane" id="pane-output">
+            <div class="panel-empty" id="outputLog">Здесь появится журнал вывода</div>
+        </div>
+        <div class="panel-pane" id="pane-terminal">
+            <div class="panel-empty">Терминал не подключён</div>
+        </div>
+        <div class="panel-pane" id="pane-memory">
+            <div class="memory-list" id="memoryList">
+                <div class="panel-empty">Рабочая память пуста</div>
+            </div>
+            <div class="memory-actions">
+                <button onclick="clearWorkingMemory()">🗑 Очистить память</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================================
+     STATUS BAR
+     ============================================================ -->
+<div class="status-bar" id="statusBar">
+    <div class="status-left">
+        <span class="status-item" id="statusBranch">🔵 main</span>
+    </div>
+    <div class="status-center">
+        <span class="status-item" id="statusUser">👤 loading...</span>
+        <span class="status-separator">→</span>
+        <span class="status-item" id="statusAgent">🤖 loading...</span>
+    </div>
+    <div class="status-right">
+        <span class="status-item" id="statusMessages">💬 0 messages</span>
+        <span class="status-item" id="statusModel">🧠 loading...</span>
+        <span class="status-item" id="statusFeedback" onclick="toggleBottomPanel()">⚠ 0 ⚡ 0</span>
+    </div>
+</div>
+
+<!-- ============================================================
+     MODALS (kept from original, restyled via CSS)
+     ============================================================ -->
+<!-- Create User Modal -->
+<div id="createUserModal" class="modal">
+    <div class="modal-content">
+        <h2>👤 Create User</h2>
+        <label for="userNameInput">User name:</label>
+        <input type="text" id="userNameInput" placeholder="Enter name">
+        <label for="preferencesFileInput">Preferences file (optional):</label>
+        <input type="file" id="preferencesFileInput" accept=".md">
+        <div class="modal-buttons">
+            <button class="cancel-btn" onclick="closeCreateUserModal()">Cancel</button>
+            <button onclick="createUser()">Create</button>
+        </div>
+    </div>
+</div>
+
+<!-- Create Agent Modal -->
+<div id="createAgentModal" class="modal">
+    <div class="modal-content">
+        <h2>🤖 Create Agent</h2>
+        <label for="agentNameInput">Agent name:</label>
+        <input type="text" id="agentNameInput" placeholder="Enter agent name">
+        <div class="modal-buttons">
+            <button class="cancel-btn" onclick="closeCreateAgentModal()">Cancel</button>
+            <button onclick="createAgent()">Create</button>
+        </div>
+    </div>
+</div>
+
+<!-- Create Swarm Task Modal -->
+<div id="createSwarmModal" class="modal">
+    <div class="modal-content">
+        <h2>🔄 Новая задача роя</h2>
+        <p class="modal-desc">Опишите, что должен сделать рой агентов.</p>
+        <label for="swarmTaskInput">Описание задачи:</label>
+        <textarea id="swarmTaskInput" rows="4" placeholder="Опишите задачу подробно..."></textarea>
+        <div class="modal-buttons">
+            <button class="cancel-btn" onclick="closeCreateSwarmModal()">Отмена</button>
+            <button onclick="createSwarmTask()">Создать задачу</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/chat.js"></script>
+</body>
+</html>
