@@ -1241,7 +1241,10 @@ function renderSwarmView(data) {
         finishing: '📝', done: '✅', paused: '⏸', cancelled: '❌', failed: '❌'
     };
     const label = swarmStageLabels[stage] || stage;
-    const desc = swarmStageDescs[stage] || '';
+    // Prefer the live stage summary over the fixed description
+    const stageData = task.stages?.[stage];
+    const liveSummary = stageData?.summary;
+    const desc = liveSummary || swarmStageDescs[stage] || '';
 
     if (iconEl) iconEl.textContent = stageIcons[stage] || '🔄';
     if (labelEl) labelEl.textContent = label;
@@ -1365,6 +1368,17 @@ function updateSwarmQuestions(task) {
         html += `</div>`;
     }
     list.innerHTML = html;
+
+    // Auto-scroll to the current question so it's always visible
+    if (qIndex < questions.length) {
+        // Small delay to let DOM settle, then scroll the current item into view
+        setTimeout(() => {
+            const currentItem = list.querySelector('.swarm-question-item.current');
+            if (currentItem) {
+                currentItem.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }, 50);
+    }
 
     if (hint) {
         hint.style.display = qIndex < questions.length ? 'block' : 'none';

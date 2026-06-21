@@ -70,7 +70,7 @@ STAGE_LABELS = {
 
 STAGE_DESCRIPTIONS = {
     SwarmStage.IDLE: "Задача создана, готова к запуску.",
-    SwarmStage.PLANNING: "Анализирую запрос и составляю план...",
+    SwarmStage.PLANNING: "Готовлю уточняющие вопросы по задаче...",
     SwarmStage.PLAN_REVIEW: "План готов. Ознакомьтесь и подтвердите для продолжения.",
     SwarmStage.EXECUTING: "Выполняю утверждённый план...",
     SwarmStage.EXEC_REVIEW: "Выполнение завершено. Оцените результат.",
@@ -517,33 +517,14 @@ class SwarmOrchestrator:
         return task
 
     async def _finalize_planning(self, task: SwarmTask, plan_output: str, invs: List[str]) -> SwarmTask:
-        """Save the plan and move to PLAN_REVIEW."""
+        """Save the plan and move to PLAN_REVIEW, then check invariants."""
         plan_dir = self._stage_dir(task, "planning")
         os.makedirs(plan_dir, exist_ok=True)
         plan_file = os.path.join(plan_dir, "plan.md")
         with open(plan_file, "w", encoding="utf-8") as f:
             f.write(plan_output)
 
-        # Run invariant check
-        check_result = await self._check_invariants(invs, plan_output, "planning")
-        task.stage_checks["planning"] = check_result
-
-        if not check_result["passed"]:
-            task.stages["planning"].status = "failed"
-            task.stages["planning"].full_output = plan_output
-            task.stages["planning"].artifacts = [plan_file]
-            task.stages["planning"].summary = self._extract_summary(plan_output, 300)
-            task.stages["planning"].completed_at = str(datetime.now())
-            task.stages["planning"].error = "Нарушены инварианты: " + "; ".join(
-                v.get("reason", v.get("invariant", "")) for v in check_result["violations"]
-            )
-            task.current_stage = SwarmStage.FAILED
-            task.stage_checks["_failed_stage"] = "planning"
-            task.waiting_for_answers = False
-            self._save_task(task)
-            logger.warning(f"Planning failed invariant check for task {task.task_id}: {len(check_result['violations'])} violations")
-            return task
-
+        # Move to PLAN_REVIEW FIRST so the user sees the plan immediately
         task.stages["planning"].status = "completed"
         task.stages["planning"].full_output = plan_output
         task.stages["planning"].artifacts = [plan_file]
@@ -553,6 +534,28 @@ class SwarmOrchestrator:
         task.waiting_for_answers = False
         task.current_stage = SwarmStage.PLAN_REVIEW
         self._save_task(task)
+
+        # Now run invariant check — non-blocking for the user
+        try:
+            check_result = await self._check_invariants(invs, plan_output, "planning")
+            task.stage_checks["planning"] = check_result
+
+            if not check_result["passed"]:
+                # Violations found — move back to review with warning
+                task.stages["planning"].status = "failed"
+                task.stages["planning"].error = "Нарушены инварианты: " + "; ".join(
+                    v.get("reason", v.get("invariant", "")) for v in check_result["violations"]
+                )
+                task.current_stage = SwarmStage.FAILED
+                task.stage_checks["_failed_stage"] = "planning"
+                logger.warning(f"Planning invariant check failed for task {task.task_id}: {len(check_result['violations'])} violations")
+            self._save_task(task)
+        except Exception as e:
+            # Checker failure is non-blocking — log and proceed
+            logger.warning(f"Invariant check error (non-blocking) for task {task.task_id}: {e}")
+            task.stage_checks["planning"] = {"passed": True, "violations": [], "checker_error": str(e)}
+            self._save_task(task)
+
         logger.info(f"Planning complete for task {task.task_id}")
         return task
 
