@@ -1477,6 +1477,10 @@ function updateSwarmControls(stage) {
         default:
             // During active stages (planning, executing, validating, finishing)
             show('swarmBtnPause');
+            // If stage has a recorded failure, show restart option
+            if (swarmTaskData?.stage_checks?._failed_stage) {
+                show('swarmBtnRestartStage');
+            }
             break;
     }
 }
@@ -1638,25 +1642,85 @@ async function swarmAction(action) {
 
 async function swarmConfirm() {
     if (!swarmTaskId || !swarmTaskData) return;
+    if (isWaiting) { showToast('Подождите...', 'info'); return; }
     
     const stage = swarmTaskData.current_stage;
-    let approveAction, nextAction;
+    let approveAction, nextAction, nextLabel;
     if (stage === 'plan_review') {
         approveAction = 'approve_plan';
         nextAction = 'start_execution';
+        nextLabel = 'Запуск выполнения...';
     } else if (stage === 'exec_review') {
         approveAction = 'approve_execution';
         nextAction = 'start_validation';
+        nextLabel = 'Запуск валидации...';
     } else if (stage === 'validation_review') {
         approveAction = 'approve_validation';
         nextAction = 'finish';
+        nextLabel = 'Финализация...';
     } else {
         showToast('На этом этапе нечего подтверждать', 'info');
         return;
     }
     
-    await swarmAction(approveAction);
-    await swarmAction(nextAction);
+    isWaiting = true;
+    disableSwarmControls();
+    
+    const descEl = document.getElementById('swarmStageDesc');
+    const origDesc = descEl ? descEl.textContent : '';
+    
+    try {
+        // Step 1: Approve
+        if (descEl) descEl.innerHTML = '<span class="swarm-loading"></span> Подтверждение...';
+        
+        const approveResp = await fetch(`/api/swarm/tasks/${swarmTaskId}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: approveAction })
+        });
+        if (!approveResp.ok) {
+            const errData = await approveResp.json().catch(() => ({}));
+            throw new Error(errData.detail || `Ошибка утверждения (${approveResp.status})`);
+        }
+        
+        const approveData = await approveResp.json();
+        swarmTaskData = approveData.task;
+        
+        // Step 2: Start next stage
+        if (descEl) descEl.innerHTML = '<span class="swarm-loading"></span> ' + nextLabel;
+        
+        const nextResp = await fetch(`/api/swarm/tasks/${swarmTaskId}/action`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: nextAction })
+        });
+        if (!nextResp.ok) {
+            const errData = await nextResp.json().catch(() => ({}));
+            throw new Error(errData.detail || `Ошибка запуска этапа (${nextResp.status})`);
+        }
+        
+        const nextData = await nextResp.json();
+        swarmTaskData = nextData.task;
+        
+        await refreshSwarmTaskUI();
+        await loadSwarmTasks();
+        
+        const actionLabels = {
+            approve_plan: 'План утверждён',
+            approve_execution: 'Выполнение одобрено',
+            approve_validation: 'Валидация одобрена'
+        };
+        showToast(actionLabels[approveAction] || 'Готово', 'success');
+        
+    } catch (err) {
+        if (descEl) descEl.textContent = origDesc;
+        showToast(`Ошибка: ${err.message}`, 'error');
+        // Refresh to get actual server state
+        try { await refreshSwarmTaskUI(); } catch (e) {}
+    } finally {
+        isWaiting = false;
+        enableSwarmControls();
+    }
 }
 
 async function cancelSwarmTask() {
@@ -1675,6 +1739,24 @@ async function swarmInput(message) {
     if (input) {
         input.value = '';
         input.style.height = 'auto';
+    }
+
+    // Show loading state in the stage description area
+    const descEl = document.getElementById('swarmStageDesc');
+    const stageLabelEl = document.getElementById('swarmStageLabel');
+    const origDesc = descEl ? descEl.textContent : '';
+    const origLabel = stageLabelEl ? stageLabelEl.textContent : '';
+
+    // Check if this is likely the last question answer (plan generation follows)
+    const questions = swarmTaskData?.pending_questions || [];
+    const qIdx = swarmTaskData?.question_index || 0;
+    const isLastAnswer = questions.length > 0 && qIdx + 1 >= questions.length;
+
+    if (isLastAnswer) {
+        if (descEl) descEl.innerHTML = '<span class="swarm-loading"></span> Генерирую план на основе ответов...';
+        if (stageLabelEl) stageLabelEl.textContent = 'Формирование плана';
+    } else if (descEl) {
+        descEl.innerHTML = '<span class="swarm-loading"></span> Обработка ответа...';
     }
 
     try {
@@ -1699,6 +1781,8 @@ async function swarmInput(message) {
             showToast('План сгенерирован! Ознакомьтесь и подтвердите.', 'success');
         }
     } catch (err) {
+        if (descEl) descEl.textContent = origDesc;
+        if (stageLabelEl) stageLabelEl.textContent = origLabel;
         showToast(`Ошибка: ${err.message}`, 'error');
     } finally {
         isWaiting = false;

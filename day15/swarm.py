@@ -509,7 +509,8 @@ class SwarmOrchestrator:
         except Exception as e:
             task.stages["planning"].status = "failed"
             task.stages["planning"].error = str(e)
-            task.current_stage = SwarmStage.IDLE
+            task.stages["planning"].completed_at = str(datetime.now())
+            # Stay in PLANNING with error info instead of reverting to IDLE
             self._save_task(task)
             logger.error(f"Question generation failed for task {task_id}: {e}")
 
@@ -620,8 +621,9 @@ class SwarmOrchestrator:
                     except Exception as e:
                         task.stages["planning"].status = "failed"
                         task.stages["planning"].error = str(e)
-                        task.current_stage = SwarmStage.IDLE
+                        task.stages["planning"].completed_at = str(datetime.now())
                         task.waiting_for_answers = False
+                        # Stay in PLANNING with error — user can retry
                         self._save_task(task)
                         logger.error(f"Plan generation failed for task {task_id}: {e}")
             return task
@@ -744,6 +746,9 @@ class SwarmOrchestrator:
 
         try:
             plan_content = task.stages.get("planning", StageResult(SwarmStage.PLANNING, "completed")).full_output
+            # Fallback: use plan_text if full_output is empty (e.g. after interactive planning)
+            if not plan_content and task.plan_text:
+                plan_content = task.plan_text
             prompt = f"""Execute the following plan:
 
 ## Approved Plan
@@ -795,7 +800,10 @@ If you cannot complete a step, explain why."""
         except Exception as e:
             task.stages["execution"].status = "failed"
             task.stages["execution"].error = str(e)
-            task.current_stage = SwarmStage.PLAN_REVIEW
+            task.stages["execution"].completed_at = str(datetime.now())
+            # Stay in EXECUTING with failed status — don't revert to PLAN_REVIEW
+            # This lets the user see the error and retry via restart_stage
+            task.stage_checks["_failed_stage"] = "execution"
             self._save_task(task)
             logger.error(f"Execution failed for task {task_id}: {e}")
 
@@ -840,6 +848,8 @@ If you cannot complete a step, explain why."""
 
         try:
             plan_content = task.stages.get("planning", StageResult(SwarmStage.PLANNING, "completed")).full_output
+            if not plan_content and task.plan_text:
+                plan_content = task.plan_text
             exec_output = task.stages.get("execution", StageResult(SwarmStage.EXECUTING, "completed")).full_output
 
             prompt = f"""Validate the following implementation against the plan.
@@ -894,7 +904,9 @@ Compare each step. Assess completeness. Recommend next steps."""
         except Exception as e:
             task.stages["validation"].status = "failed"
             task.stages["validation"].error = str(e)
-            task.current_stage = SwarmStage.EXEC_REVIEW
+            task.stages["validation"].completed_at = str(datetime.now())
+            # Stay in VALIDATING with failed status
+            task.stage_checks["_failed_stage"] = "validation"
             self._save_task(task)
             logger.error(f"Validation failed for task {task_id}: {e}")
 
@@ -939,6 +951,8 @@ Compare each step. Assess completeness. Recommend next steps."""
 
         try:
             plan_content = task.stages.get("planning", StageResult(SwarmStage.PLANNING, "completed")).full_output
+            if not plan_content and task.plan_text:
+                plan_content = task.plan_text
             exec_output = task.stages.get("execution", StageResult(SwarmStage.EXECUTING, "completed")).full_output
             val_output = task.stages.get("validation", StageResult(SwarmStage.VALIDATING, "completed")).full_output
 
@@ -1000,7 +1014,9 @@ Create a comprehensive final report that summarizes the entire process."""
         except Exception as e:
             task.stages["finishing"].status = "failed"
             task.stages["finishing"].error = str(e)
-            task.current_stage = SwarmStage.VALIDATION_REVIEW
+            task.stages["finishing"].completed_at = str(datetime.now())
+            # Stay in FINISHING with failed status
+            task.stage_checks["_failed_stage"] = "finishing"
             self._save_task(task)
             logger.error(f"Finishing failed for task {task_id}: {e}")
 
@@ -1024,7 +1040,8 @@ Create a comprehensive final report that summarizes the entire process."""
     async def resume(self, task_id: str) -> SwarmTask:
         """Resume a paused or failed task. Returns to the appropriate stage."""
         task = self._get_task(task_id)
-        if task.current_stage not in (SwarmStage.PAUSED, SwarmStage.FAILED):
+        if task.current_stage not in (SwarmStage.PAUSED, SwarmStage.FAILED,
+                                       SwarmStage.EXECUTING, SwarmStage.VALIDATING, SwarmStage.FINISHING):
             raise ValueError(f"Task is not paused or failed, current stage: {task.current_stage.value}")
 
         if task.stages.get("validation", StageResult(SwarmStage.VALIDATING, "pending")).status == "completed":
@@ -1088,10 +1105,19 @@ Create a comprehensive final report that summarizes the entire process."""
         logger.info(f"Task {task_id} deleted")
 
     async def restart_stage(self, task_id: str) -> SwarmTask:
-        """Restart the failed stage after fixing invariants."""
+        """Restart the failed stage after fixing invariants.
+        
+        Works from FAILED state or from active stages that have _failed_stage set
+        (e.g. EXECUTING with a failed LLM call).
+        """
         task = self._get_task(task_id)
-        if task.current_stage != SwarmStage.FAILED:
-            raise ValueError(f"Can only restart from FAILED state")
+        
+        # Allow restart from FAILED or from active stages with _failed_stage
+        failed_stages = {SwarmStage.EXECUTING, SwarmStage.VALIDATING, SwarmStage.FINISHING, SwarmStage.FAILED}
+        if task.current_stage not in failed_stages:
+            raise ValueError(f"Cannot restart from stage: {task.current_stage.value}")
+        if task.current_stage != SwarmStage.FAILED and not task.stage_checks.get("_failed_stage"):
+            raise ValueError(f"No failure recorded for stage {task.current_stage.value}")
 
         stage_name = task.stage_checks.get("_failed_stage", "")
         if not stage_name:

@@ -729,7 +729,7 @@ class TestOrchestratorInvariants:
     @pytest.mark.asyncio
     async def test_restart_stage_not_failed_raises(self, orchestrator, mock_llm_response):
         task = await orchestrator.create_task("Test", "user1")
-        with pytest.raises(ValueError, match="FAILED"):
+        with pytest.raises(ValueError, match="Cannot restart"):
             await orchestrator.restart_stage(task.task_id)
 
     @pytest.mark.asyncio
