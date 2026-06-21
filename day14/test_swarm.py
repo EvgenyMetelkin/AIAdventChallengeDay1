@@ -428,19 +428,18 @@ class TestOrchestratorErrors:
     @pytest.mark.asyncio
     async def test_llm_timeout_returns_to_idle(self, orchestrator):
         task = await orchestrator.create_task("Test", "user1")
-        # Directly assign a function that raises
         async def raising_agent(sp, um, invariants=None):
             raise Exception("Request timed out")
         original = orchestrator._run_agent
         orchestrator._run_agent = raising_agent
         try:
-            with pytest.raises(Exception, match="Request timed out"):
-                await orchestrator.start_planning(task.task_id)
+            task = await orchestrator.start_planning(task.task_id)
         finally:
             orchestrator._run_agent = original
-        task = orchestrator.get_task(task.task_id)
+        # Returns task with failure, not raises
         assert task.current_stage == SwarmStage.IDLE
         assert task.stages["planning"].status == "failed"
+        assert "timed out" in task.stages["planning"].error
 
     @pytest.mark.asyncio
     async def test_llm_http_error(self, orchestrator):
@@ -450,10 +449,11 @@ class TestOrchestratorErrors:
         original = orchestrator._run_agent
         orchestrator._run_agent = raising_agent
         try:
-            with pytest.raises(Exception, match="HTTP error 401"):
-                await orchestrator.start_planning(task.task_id)
+            task = await orchestrator.start_planning(task.task_id)
         finally:
             orchestrator._run_agent = original
+        assert task.stages["planning"].status == "failed"
+        assert "401" in task.stages["planning"].error
 
     @pytest.mark.asyncio
     async def test_task_not_found(self, orchestrator):
@@ -818,3 +818,87 @@ class TestOrchestratorInvariants:
         """FAILED stage should have proper labels."""
         assert STAGE_LABELS[SwarmStage.FAILED] == "Ошибка инвариантов"
         assert "инвариантов" in STAGE_DESCRIPTIONS[SwarmStage.FAILED]
+
+    def test_parse_plain_text_fallback(self):
+        """parse_invariants_md should fall back to line-by-line for non-bullet content."""
+        content = """# Invariants
+
+All requests must be async
+Use only FastAPI
+Python 3.9+
+"""
+        result = parse_invariants_md(content)
+        assert len(result) == 3
+        assert result[0] == "All requests must be async"
+
+    @pytest.mark.asyncio
+    async def test_checker_llm_failure_does_not_block(self, orchestrator):
+        """When the checker LLM itself fails, the stage should NOT be blocked."""
+        call_count = [0]
+
+        async def fake_run(sp, um, invariants=None):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return "# Plan\n\nValid plan."
+            else:
+                raise Exception("Checker LLM timeout")
+
+        original = orchestrator._run_agent
+        orchestrator._run_agent = fake_run
+        try:
+            task = await orchestrator.create_task(
+                "Test", "user1",
+                invariants=["Use FastAPI"],
+            )
+            task = await orchestrator.start_planning(task.task_id)
+        finally:
+            orchestrator._run_agent = original
+
+        assert task.current_stage == SwarmStage.PLAN_REVIEW
+        assert task.stages["planning"].status == "completed"
+        assert task.stage_checks["planning"]["passed"] is True
+        assert "checker_error" in task.stage_checks["planning"]
+
+    @pytest.mark.asyncio
+    async def test_restart_clears_downstream_stages(self, orchestrator):
+        """restart_stage should clear the failed stage AND all downstream stages."""
+        task = await orchestrator.create_task("Test", "user1", invariants=["R1"])
+
+        task.stages["planning"] = StageResult(stage=SwarmStage.PLANNING, status="completed")
+        task.stages["execution"] = StageResult(stage=SwarmStage.EXECUTING, status="failed")
+        task.stages["validation"] = StageResult(stage=SwarmStage.VALIDATING, status="completed")
+        task.stage_checks["planning"] = {"passed": True, "violations": []}
+        task.stage_checks["execution"] = {"passed": False, "violations": [{"invariant": "R1"}]}
+        task.stage_checks["validation"] = {"passed": True, "violations": []}
+        task.stage_checks["_failed_stage"] = "execution"
+        task.current_stage = SwarmStage.FAILED
+        orchestrator._save_task(task)
+
+        task = await orchestrator.restart_stage(task.task_id)
+        # Planning stays (upstream), execution + validation cleared
+        assert task.stages["planning"].status == "completed"
+        assert task.stages["execution"].status == "pending"
+        assert task.stages["execution"].full_output == ""
+        assert task.stages["validation"].status == "pending"
+        # Upstream check preserved, downstream cleared
+        assert "planning" in task.stage_checks
+        assert "execution" not in task.stage_checks
+        assert "validation" not in task.stage_checks
+        assert "_failed_stage" not in task.stage_checks
+        assert task.current_stage == SwarmStage.PLAN_REVIEW
+
+    @pytest.mark.asyncio
+    async def test_retry_clears_invariant_checks(self, orchestrator, mock_llm_response):
+        """Retry from review stages should clear the corresponding invariant checks."""
+        task = await orchestrator.create_task("Test", "user1")
+        task.stages["planning"] = StageResult(stage=SwarmStage.PLANNING, status="completed")
+        task.stages["execution"] = StageResult(stage=SwarmStage.EXECUTING, status="completed")
+        task.stage_checks["planning"] = {"passed": True, "violations": []}
+        task.stage_checks["execution"] = {"passed": True, "violations": []}
+        task.current_stage = SwarmStage.EXEC_REVIEW
+        orchestrator._save_task(task)
+
+        task = await orchestrator.retry_stage(task.task_id)
+        assert task.current_stage == SwarmStage.PLAN_REVIEW
+        assert "execution" not in task.stage_checks
+        assert "planning" in task.stage_checks

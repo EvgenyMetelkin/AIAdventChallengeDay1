@@ -62,16 +62,18 @@ def get_user_name_from_preferences(preferences_file: str) -> Optional[str]:
 def parse_invariants_md(content: str) -> List[str]:
     """Parse an invariants markdown file into a list of individual invariant strings.
 
-    The file uses a Markdown bulleted list format. Each top-level `-` line
-    (or numbered `1.` line) is treated as one invariant. Multi-line entries
-    (continuation lines beginning with whitespace) are folded into the
-    preceding bullet.
+    The file may use a Markdown bulleted list format (each `-` or `1.` line is one
+    invariant) OR plain paragraphs. Multi-line bullet entries (continuation lines
+    beginning with whitespace) are folded into the preceding bullet.
+
+    Fallback: if no bullet markers are found, each non-empty non-header line
+    is treated as a separate invariant.
 
     Args:
         content: Raw markdown content of invariants.md
 
     Returns:
-        List of invariant strings (one per bullet)
+        List of invariant strings (one per bullet or line)
     """
     if not content or not content.strip():
         return []
@@ -79,6 +81,7 @@ def parse_invariants_md(content: str) -> List[str]:
     invariants = []
     lines = content.strip().split("\n")
     current = None
+    has_bullets = False
 
     for line in lines:
         stripped = line.strip()
@@ -87,6 +90,7 @@ def parse_invariants_md(content: str) -> List[str]:
             continue
         # Start a new bullet on - or 1. patterns
         if re.match(r"^[-*]\s+", stripped) or re.match(r"^\d+[.)]\s+", stripped):
+            has_bullets = True
             # Flush previous
             if current is not None:
                 invariants.append(current.strip())
@@ -98,6 +102,13 @@ def parse_invariants_md(content: str) -> List[str]:
 
     if current is not None:
         invariants.append(current.strip())
+
+    # Fallback: if no bullets found, treat each non-empty non-header line as invariant
+    if not has_bullets and not invariants:
+        for line in lines:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#"):
+                invariants.append(stripped)
 
     return invariants
 

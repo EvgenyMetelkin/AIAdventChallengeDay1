@@ -73,7 +73,23 @@
     <!-- Settings panel -->
     <div class="sidebar-panel" id="panel-settings">
         <div class="sidebar-header"><span>НАСТРОЙКИ</span></div>
-        <div class="sidebar-empty" id="settingsInfo">Модель: загрузка...</div>
+        <div class="settings-content" id="settingsContent">
+            <div class="settings-block">
+                <div class="settings-label">Модель</div>
+                <div class="settings-value" id="settingsModel">загрузка...</div>
+            </div>
+            <div class="settings-block">
+                <div class="settings-label">
+                    📋 Инварианты
+                    <span class="settings-hint">Изменения повлияют только на новые задачи</span>
+                </div>
+                <textarea class="settings-textarea" id="invariantsEditor" rows="8" placeholder="- Правило 1&#10;- Правило 2&#10;..."></textarea>
+                <div class="settings-actions">
+                    <button class="settings-btn primary" onclick="saveInvariants()">💾 Сохранить</button>
+                    <span class="settings-status" id="invariantsStatus"></span>
+                </div>
+            </div>
+        </div>
     </div>
 </div>
 

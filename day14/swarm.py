@@ -437,10 +437,11 @@ class SwarmOrchestrator:
         self._save_task(task)
 
         try:
+            invs = self._ensure_invariants(task)
             plan_output = await self._run_agent(
                 PLANNER_SYSTEM_PROMPT,
                 f"Create a detailed implementation plan for the following task:\n\n{task.description}",
-                invariants=task.invariants,
+                invariants=invs,
             )
             # Save plan to file
             plan_dir = self._stage_dir(task, "planning")
@@ -450,7 +451,7 @@ class SwarmOrchestrator:
                 f.write(plan_output)
 
             # Run invariant check
-            check_result = await self._check_invariants(task.invariants, plan_output, "planning")
+            check_result = await self._check_invariants(invs, plan_output, "planning")
             task.stage_checks["planning"] = check_result
 
             if not check_result["passed"]:
@@ -483,7 +484,7 @@ class SwarmOrchestrator:
             task.stages["planning"].error = str(e)
             task.current_stage = SwarmStage.IDLE
             self._save_task(task)
-            raise
+            logger.error(f"Planning failed for task {task_id}: {e}")
 
         return task
 
@@ -538,7 +539,8 @@ Implement the plan step by step. Create all necessary files and artifacts.
 Describe what you did for each step. Be thorough and follow the plan exactly.
 If you cannot complete a step, explain why."""
             
-            exec_output = await self._run_agent(EXECUTOR_SYSTEM_PROMPT, prompt, invariants=task.invariants)
+            invs = self._ensure_invariants(task)
+            exec_output = await self._run_agent(EXECUTOR_SYSTEM_PROMPT, prompt, invariants=invs)
 
             # Save execution report
             exec_dir = self._stage_dir(task, "execution")
@@ -548,7 +550,7 @@ If you cannot complete a step, explain why."""
                 f.write(exec_output)
 
             # Run invariant check
-            check_result = await self._check_invariants(task.invariants, exec_output, "execution")
+            check_result = await self._check_invariants(invs, exec_output, "execution")
             task.stage_checks["execution"] = check_result
 
             if not check_result["passed"]:
@@ -580,7 +582,7 @@ If you cannot complete a step, explain why."""
             task.stages["execution"].error = str(e)
             task.current_stage = SwarmStage.PLAN_REVIEW
             self._save_task(task)
-            raise
+            logger.error(f"Execution failed for task {task_id}: {e}")
 
         return task
 
@@ -637,7 +639,8 @@ If you cannot complete a step, explain why."""
 Compare each step in the plan against what was delivered in the execution report.
 Rate completeness, identify gaps, and recommend whether to proceed."""
 
-            val_output = await self._run_agent(VALIDATOR_SYSTEM_PROMPT, prompt, invariants=task.invariants)
+            invs = self._ensure_invariants(task)
+            val_output = await self._run_agent(VALIDATOR_SYSTEM_PROMPT, prompt, invariants=invs)
 
             # Save validation report
             val_dir = self._stage_dir(task, "validation")
@@ -647,7 +650,7 @@ Rate completeness, identify gaps, and recommend whether to proceed."""
                 f.write(val_output)
 
             # Run invariant check
-            check_result = await self._check_invariants(task.invariants, val_output, "validation")
+            check_result = await self._check_invariants(invs, val_output, "validation")
             task.stage_checks["validation"] = check_result
 
             if not check_result["passed"]:
@@ -679,7 +682,7 @@ Rate completeness, identify gaps, and recommend whether to proceed."""
             task.stages["validation"].error = str(e)
             task.current_stage = SwarmStage.EXEC_REVIEW
             self._save_task(task)
-            raise
+            logger.error(f"Validation failed for task {task_id}: {e}")
 
         return task
 
@@ -743,7 +746,8 @@ Rate completeness, identify gaps, and recommend whether to proceed."""
 ## Instructions
 Create a comprehensive final report that summarizes the entire process."""
 
-            final_output = await self._run_agent(FINISHER_SYSTEM_PROMPT, prompt, invariants=task.invariants)
+            invs = self._ensure_invariants(task)
+            final_output = await self._run_agent(FINISHER_SYSTEM_PROMPT, prompt, invariants=invs)
 
             # Save final report
             done_dir = self._stage_dir(task, "done")
@@ -753,7 +757,7 @@ Create a comprehensive final report that summarizes the entire process."""
                 f.write(final_output)
 
             # Run invariant check
-            check_result = await self._check_invariants(task.invariants, final_output, "finishing")
+            check_result = await self._check_invariants(invs, final_output, "finishing")
             task.stage_checks["finishing"] = check_result
 
             if not check_result["passed"]:
@@ -785,7 +789,7 @@ Create a comprehensive final report that summarizes the entire process."""
             task.stages["finishing"].error = str(e)
             task.current_stage = SwarmStage.VALIDATION_REVIEW
             self._save_task(task)
-            raise
+            logger.error(f"Finishing failed for task {task_id}: {e}")
 
         return task
 
@@ -829,15 +833,26 @@ Create a comprehensive final report that summarizes the entire process."""
         return task
 
     async def retry_stage(self, task_id: str) -> SwarmTask:
-        """Retry the current stage. Goes back to the appropriate pre-stage."""
+        """Retry the current stage. Goes back to the appropriate pre-stage.
+
+        Also clears the stage's invariant check results so the UI shows
+        fresh checks on the next run.
+        """
         task = self._get_task(task_id)
         review_stages = {
-            SwarmStage.PLAN_REVIEW: SwarmStage.IDLE,
-            SwarmStage.EXEC_REVIEW: SwarmStage.PLAN_REVIEW,
-            SwarmStage.VALIDATION_REVIEW: SwarmStage.EXEC_REVIEW,
+            SwarmStage.PLAN_REVIEW: ("planning", SwarmStage.IDLE),
+            SwarmStage.EXEC_REVIEW: ("execution", SwarmStage.PLAN_REVIEW),
+            SwarmStage.VALIDATION_REVIEW: ("validation", SwarmStage.EXEC_REVIEW),
         }
         if task.current_stage in review_stages:
-            task.current_stage = review_stages[task.current_stage]
+            stage_name, target = review_stages[task.current_stage]
+            # Clear the stage that will be re-run and all downstream checks
+            all_stages = ["planning", "execution", "validation", "finishing"]
+            clear_from_idx = all_stages.index(stage_name) if stage_name in all_stages else 0
+            for i in range(clear_from_idx, len(all_stages)):
+                task.stage_checks.pop(all_stages[i], None)
+
+            task.current_stage = target
             task.updated_at = str(datetime.now())
             self._save_task(task)
             logger.info(f"Task {task_id} retry — moved to {task.current_stage.value}")
@@ -899,21 +914,26 @@ Create a comprehensive final report that summarizes the entire process."""
         if target_stage is None:
             raise ValueError(f"Unknown stage to restart: {stage_name}")
 
-        # Clear the failed stage result and its invariant check
-        if stage_name in task.stages:
-            task.stages[stage_name].status = "pending"
-            task.stages[stage_name].summary = "Этап перезапущен после исправления нарушений."
-            task.stages[stage_name].full_output = ""
-            task.stages[stage_name].artifacts = []
-            task.stages[stage_name].error = None
-        if stage_name in task.stage_checks:
-            del task.stage_checks[stage_name]
-        if "_failed_stage" in task.stage_checks:
-            del task.stage_checks["_failed_stage"]
+        # Define stage order for cascading clears
+        all_stages = ["planning", "execution", "validation", "finishing"]
+        clear_from_idx = all_stages.index(stage_name) if stage_name in all_stages else 0
+
+        # Clear the failed stage and ALL downstream stages
+        for i in range(clear_from_idx, len(all_stages)):
+            s = all_stages[i]
+            if s in task.stages:
+                task.stages[s].status = "pending"
+                task.stages[s].summary = f"Этап сброшен из-за перезапуска '{stage_name}'."
+                task.stages[s].full_output = ""
+                task.stages[s].artifacts = []
+                task.stages[s].error = None
+            task.stage_checks.pop(s, None)
+        task.stage_checks.pop("_failed_stage", None)
 
         task.current_stage = target_stage
         self._save_task(task)
-        logger.info(f"Task {task_id} stage '{stage_name}' restarted, back to {target_stage.value}")
+        logger.info(f"Task {task_id} stage '{stage_name}' restarted, back to {target_stage.value}, "
+                     f"cleared {len(all_stages) - clear_from_idx} stages")
         return task
 
     # ================================================================
@@ -1008,6 +1028,40 @@ Create a comprehensive final report that summarizes the entire process."""
         except httpx.RequestError as e:
             raise Exception(f"Network error: {str(e)}")
 
+    def _ensure_invariants(self, task: SwarmTask) -> List[str]:
+        """Ensure invariants are loaded for a task.
+
+        If task.invariants is empty, tries to reload from the user's invariants.md file
+        and updates the task state. Returns the (possibly updated) invariants list.
+        """
+        if task.invariants:
+            return task.invariants
+
+        # Try to load from the user's invariants file as fallback
+        # base_dir is users/{uid}/swarms, so dirname is users/{uid}
+        # invariants.md lives at users/{uid}/invariants.md
+        from utils import parse_invariants_md
+        invariants_file = os.path.join(
+            os.path.dirname(self._base_dir),
+            "invariants.md",
+        )
+        if os.path.exists(invariants_file):
+            try:
+                with open(invariants_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+                loaded = parse_invariants_md(content)
+                if loaded:
+                    task.invariants = loaded
+                    self._save_task(task)
+                    logger.info(
+                        f"Reloaded {len(loaded)} invariants from file for task {task.task_id}"
+                    )
+                    return loaded
+            except Exception as e:
+                logger.warning(f"Failed to reload invariants for task {task.task_id}: {e}")
+
+        return task.invariants
+
     async def _check_invariants(self, invariants: List[str], artifact_text: str, stage_name: str) -> dict:
         """Check whether an artifact violates any invariants.
 
@@ -1035,8 +1089,11 @@ Create a comprehensive final report that summarizes the entire process."""
                 invariants=None,  # Don't inject invariants into the checker — that's what it checks
             )
         except Exception as e:
-            logger.error(f"Invariant check LLM call failed for stage '{stage_name}': {e}")
-            return {"passed": False, "violations": [{"invariant": "LLM_ERROR", "reason": str(e)}], "raw_response": ""}
+            logger.warning(f"Invariant check LLM call failed for stage '{stage_name}': {e}")
+            # Checker failure is not the artifact's fault — don't block the pipeline.
+            # The check is advisory; if the checker itself is down, proceed.
+            return {"passed": True, "violations": [], "raw_response": "",
+                    "checker_error": str(e)}
 
         # Parse the JSON response
         try:

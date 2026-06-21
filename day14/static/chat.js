@@ -212,17 +212,67 @@ function updateStatusBar() {
 }
 
 function updateSettingsPanel() {
-    const info = document.getElementById('settingsInfo');
-    if (info) {
+    // Update model info
+    const modelEl = document.getElementById('settingsModel');
+    if (modelEl) {
         fetch('/info').then(r => r.json()).then(data => {
-            info.innerHTML = `
-                <p><strong>Model:</strong> ${data.model || 'N/A'}</p>
-                <p><strong>Agent ID:</strong> ${data.agent_id || 'N/A'}</p>
-                ${data.user ? `<p><strong>User:</strong> ${data.user.name}</p>` : ''}
-            `;
+            modelEl.textContent = data.model || 'N/A';
         }).catch(() => {
-            info.textContent = 'Не удалось загрузить настройки';
+            modelEl.textContent = 'Не удалось загрузить';
         });
+    }
+
+    // Load invariants into editor
+    loadInvariantsIntoEditor();
+}
+
+async function loadInvariantsIntoEditor() {
+    const editor = document.getElementById('invariantsEditor');
+    if (!editor) return;
+
+    try {
+        const response = await fetch(`/api/invariants?user_id=${currentUserId || ''}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        editor.value = data.content || '';
+    } catch (err) {
+        console.error('Error loading invariants:', err);
+        editor.value = '# Invariants\n\n(не удалось загрузить)';
+    }
+}
+
+async function saveInvariants() {
+    const editor = document.getElementById('invariantsEditor');
+    const statusEl = document.getElementById('invariantsStatus');
+    if (!editor) return;
+
+    const content = editor.value;
+    if (!content || !content.trim()) {
+        if (statusEl) { statusEl.textContent = '❌ Не может быть пустым'; statusEl.className = 'settings-status error'; }
+        return;
+    }
+
+    if (statusEl) { statusEl.textContent = '⏳ Сохранение...'; statusEl.className = 'settings-status loading'; }
+
+    try {
+        const response = await fetch(`/api/invariants?user_id=${currentUserId || ''}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ content })
+        });
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            throw new Error(errData.detail || `HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        userInvariants = data.invariants || [];
+        userInvariantsContent = content;
+        if (statusEl) { statusEl.textContent = `✅ Сохранено (${data.count} инвариантов)`; statusEl.className = 'settings-status success'; }
+        showToast('Инварианты сохранены', 'success');
+        setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 3000);
+    } catch (err) {
+        if (statusEl) { statusEl.textContent = `❌ ${err.message}`; statusEl.className = 'settings-status error'; }
+        showToast(`Ошибка сохранения: ${err.message}`, 'error');
     }
 }
 
