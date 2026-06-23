@@ -1,4 +1,4 @@
-# AGENTS.md — LLM Agent Web Chat (Day 14)
+# AGENTS.md — LLM Agent Web Chat (Day 15)
 
 Async web chat for OpenAI-compatible LLM APIs with multi-user, multi-agent sessions,
 Swarm multi-stage task orchestrator, and invariant enforcement.
@@ -55,7 +55,7 @@ utils.py ── Markdown parser + invariants formatter (~210 lines)
   ├── format_invariants_prompt() — injects invariants into agent system prompts
   ├── format_invariant_check_prompt() — prompt for violation-checking LLM call
   └── generate_summary() — LLM-powered conversation summary
-swarm.py ── Swarm orchestrator (~1180 lines)
+swarm.py ── Swarm orchestrator (~1370 lines)
   ├── SwarmStage — 12 states: IDLE, PLANNING, PLAN_REVIEW, EXECUTING, EXEC_REVIEW,
   │                VALIDATING, VALIDATION_REVIEW, FINISHING, DONE, PAUSED, CANCELLED, FAILED
   ├── SwarmTask — dataclass with invariants[], stage_checks{}, progress tracking
@@ -64,12 +64,12 @@ swarm.py ── Swarm orchestrator (~1180 lines)
   ├── _ensure_invariants() — reloads invariants from file if task.invariants is empty
   ├── _check_invariants() — separate LLM call to validate artifact against invariants
   └── 5 specialized system prompts (Planner, Executor, Validator, Finisher, InvariantChecker)
-static/chat.js ── Vanilla JS SPA (~1680 lines, VS Code IDE UI)
+static/chat.js ── Vanilla JS SPA (~1980 lines, VS Code IDE UI)
   ├── Activity bar, sidebar (explorer/swarm/settings), tab bar, bottom panel, status bar
   ├── sendMessageStream() — ReadableStream SSE consumer
   ├── Swarm view: stages, progress bar, artifacts viewer, invariant checks display
   └── User/agent CRUD, invariants editor, working memory panel
-templates/index.html ── Jinja2 template (~310 lines, CSS in static/style.css ~1460 lines)
+templates/index.html ── Jinja2 template (~340 lines, CSS in static/style.css ~1730 lines)
 test_agent.py ── 19 tests, 6 classes, mock User fixture
 test_swarm.py ── 66 tests, 12 classes (including 3 invariant-specific classes)
 ```
@@ -156,7 +156,8 @@ users/
 
 **Swarm actions**: `start_planning`, `approve_plan`, `reject_plan`, `start_execution`,
 `approve_execution`, `reject_execution`, `start_validation`, `approve_validation`,
-`reject_validation`, `finish`, `pause`, `resume`, `retry`, `restart_stage`, `cancel`
+`reject_validation`, `finish`, `pause`, `resume`, `retry`, `restart_stage`, `cancel`,
+`user_input`, `refine_plan`
 
 ## Coding Conventions
 
@@ -189,4 +190,6 @@ users/
 - **Last user/agent cannot be deleted** — API returns 400.
 - **`users/` and `agent_history/` are gitignored**.
 - **`.env.example`** uses `deepseek-v4-flash` as default; codebase is OpenAI-API compatible.
+- **`.env.example` uses `LLM_` prefix** (`LLM_TEMPERATURE`, `LLM_MAX_TOKENS`, `LLM_TIMEOUT`, `LLM_VERBOSE`) for CLI env vars. `web.py` reads **unprefixed** names (`TEMPERATURE`, `MAX_TOKENS`, `VERBOSE`) — set both forms when using both entrypoints.
+- **Agent has configurable HTTP timeout** (`timeout: float = 30.0` in constructor). CLI maps from `LLM_TIMEOUT` env var.
 - **`os.replace()`** is atomic on POSIX but not Windows.
