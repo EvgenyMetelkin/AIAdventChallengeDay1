@@ -1,0 +1,8 @@
+{
+  "system_prompt": "",
+  "default_model": "deepseek-v4-flash",
+  "default_temperature": 0.7,
+  "default_max_tokens": 500,
+  "name": "Тестович",
+  "current_agent_id": "873a7388"
+}

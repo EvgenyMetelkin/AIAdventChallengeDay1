@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}{{ current_user.name if current_user else "AI Chat" }}{% endblock %}
+
+{% block body %}
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <h2>AI Chat</h2>
+  </div>
+  <div class="sidebar-body">
+
+    <div class="sidebar-section">
+      <h3>User</h3>
+      <select id="user-select">
+        {% for u in all_users %}
+          <option value="{{ u.user_id }}"
+            {% if current_user and current_user.user_id == u.user_id %}selected{% endif %}>
+            {{ u.name }}
+          </option>
+        {% endfor %}
+      </select>
+      <form method="post" action="/api/user/create" style="display:flex;gap:6px;margin-top:4px;">
+        <input type="text" name="name" placeholder="New user name" style="flex:1;">
+        <button type="submit" class="small">+</button>
+      </form>
+    </div>
+
+    {% if current_user %}
+    <div class="sidebar-section">
+      <h3>Agent</h3>
+      <select id="agent-select">
+        {% for aid, ainfo in agents.items() %}
+          <option value="{{ aid }}"
+            {% if current_user.current_agent_id == aid %}selected{% endif %}>
+            {{ ainfo.name }}
+          </option>
+        {% endfor %}
+      </select>
+      <form method="post" action="/api/agent/create" style="display:flex;gap:6px;margin-top:4px;">
+        <input type="text" name="name" placeholder="New agent name" style="flex:1;">
+        <button type="submit" class="small">+</button>
+      </form>
+    </div>
+
+    <div class="sidebar-section">
+      <h3>Settings</h3>
+      <form id="settings-form">
+        <div class="settings-row">
+          <label>Model</label>
+          <input id="setting-model" type="text" value="{{ settings.model }}">
+        </div>
+        <div class="settings-row">
+          <label>Temp</label>
+          <input id="setting-temperature" type="number" step="0.1" min="0" max="2"
+                 value="{{ settings.temperature }}">
+        </div>
+        <div class="settings-row">
+          <label>Max tokens</label>
+          <input id="setting-max-tokens" type="number" min="1" max="32000"
+                 value="{{ settings.max_tokens }}">
+        </div>
+        <button type="submit" style="margin-top:6px;">Save Settings</button>
+      </form>
+    </div>
+
+    <div class="sidebar-section">
+      <form method="post" action="/api/agent/reset" style="margin-top:4px;"
+            onsubmit="return confirm('Reset current agent history?');">
+        <button type="submit" class="danger">Reset History</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  <a href="/admin" class="admin-link">Admin Panel</a>
+</aside>
+
+<div class="main">
+  <div class="chat-header">
+    <div>
+      <h1>
+        {% if current_user %}
+          {{ current_user.name }}
+          {% if current_user.current_agent_id and agents.get(current_user.current_agent_id) %}
+            / {{ agents[current_user.current_agent_id].name }}
+          {% endif %}
+        {% else %}
+          AI Chat
+        {% endif %}
+      </h1>
+    </div>
+  </div>
+
+  <div class="chat-messages" id="chat-messages">
+    {% if current_user and history %}
+      {% for msg in history %}
+        <div class="message {{ msg.role }}">
+          <div class="message-icon">{{ 'U' if msg.role == 'user' else 'A' }}</div>
+          <div class="message-content">{{ msg.content }}</div>
+        </div>
+      {% endfor %}
+    {% else %}
+      <div class="welcome">
+        <h2>How can I help you today?</h2>
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="chat-input-area">
+    <form class="chat-input-form" id="chat-form" autocomplete="off">
+      <textarea id="msg-input" name="message" rows="1"
+                placeholder="Send a message..."
+                {% if not current_user %}disabled{% endif %}></textarea>
+      <button type="submit" id="send-btn"
+              {% if not current_user %}disabled{% endif %}>Send</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
