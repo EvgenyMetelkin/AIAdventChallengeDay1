@@ -116,9 +116,9 @@ document.addEventListener("DOMContentLoaded", () => {
             try {
               const data = JSON.parse(jsonStr);
               if (data.error) {
-                assistantMsgEl.querySelector(".message-content").textContent =
-                  "Error: " + data.error;
-                assistantMsgEl.querySelector(".message-content").classList.remove("streaming-cursor");
+                const cd = assistantMsgEl.querySelector(".message-content");
+                cd.classList.remove("loading", "streaming-cursor");
+                cd.textContent = "Error: " + data.error;
                 return;
               }
               if (data.done) {
@@ -126,16 +126,22 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
               }
               if (data.token) {
-                assistantMsgEl.querySelector(".message-content").textContent += data.token;
+                const contentDiv = assistantMsgEl.querySelector(".message-content");
+                if (contentDiv.classList.contains("loading")) {
+                  contentDiv.classList.remove("loading");
+                  contentDiv.classList.add("streaming-cursor");
+                  contentDiv.textContent = "";
+                }
+                contentDiv.textContent += data.token;
                 scrollToBottom();
               }
             } catch (_) {}
           }
         }
       } catch (err) {
-        assistantMsgEl.querySelector(".message-content").textContent =
-          "Error: " + err.message;
-        assistantMsgEl.querySelector(".message-content").classList.remove("streaming-cursor");
+        const cd = assistantMsgEl.querySelector(".message-content");
+        cd.classList.remove("loading", "streaming-cursor");
+        cd.textContent = "Error: " + err.message;
       } finally {
         sendBtn.disabled = false;
         msgInput.focus();
@@ -153,8 +159,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const contentDiv = document.createElement("div");
     contentDiv.className = "message-content";
-    if (streaming) contentDiv.classList.add("streaming-cursor");
-    contentDiv.textContent = content;
+    if (streaming) {
+      contentDiv.classList.add("loading");
+      contentDiv.textContent = "...";
+    } else {
+      contentDiv.textContent = content;
+    }
 
     div.appendChild(icon);
     div.appendChild(contentDiv);

@@ -110,10 +110,19 @@ body { display: flex; overflow: hidden; }
 
 .message-content { flex: 1; font-size: 14px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
 
-.message-content .streaming-cursor::after {
+.message-content.streaming-cursor::after {
   content: "▊"; animation: blink 1s step-end infinite; margin-left: 2px;
 }
 @keyframes blink { 50% { opacity: 0; } }
+
+.message-content.loading {
+  color: var(--text-secondary);
+  animation: pulse-dots 1.5s ease-in-out infinite;
+}
+@keyframes pulse-dots {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
 
 /* ---- Input Area ---- */
 .chat-input-area {
