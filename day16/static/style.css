@@ -22,6 +22,7 @@
 html, body { height: 100%; font-family: var(--font); background: var(--bg-main); color: var(--text-primary); }
 
 body { display: flex; overflow: hidden; }
+body.admin-page { display: block; overflow: auto; }
 
 /* ---- Sidebar ---- */
 .sidebar {
@@ -335,3 +336,12 @@ body { display: flex; overflow: hidden; }
   font-size: 12px;
 }
 .mcp-env-add:hover { background: var(--accent-hover); }
+
+.message.tool, .tool-block { display: none; }
+
+.mcp-badge {
+  font-size: 11px; color: var(--text-secondary);
+  margin-bottom: 8px;
+  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
+  opacity: 0.7;
+}

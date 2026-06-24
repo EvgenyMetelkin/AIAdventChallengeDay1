@@ -92,28 +92,20 @@
   <div class="chat-messages" id="chat-messages">
     {% if current_user and history %}
       {% for msg in history %}
+        {% if msg.role != 'tool' and (msg.role == 'user' or msg.content) %}
         <div class="message {{ msg.role }}">
           <div class="message-icon">
             {% if msg.role == 'user' %}U
-            {% elif msg.role == 'tool' %}T
             {% else %}A{% endif %}
           </div>
           <div class="message-content">
-            {% if msg.role == 'tool' %}
-              <span class="tool-name">{{ msg.get('name', 'tool') }}</span>
-              <span class="tool-output">{{ msg.content }}</span>
-            {% elif msg.role == 'assistant' and msg.get('tool_calls') %}
-              {% for tc in msg.tool_calls %}
-                <div class="tool-block">
-                  <div class="tool-block-header">{{ tc.function.name }}({{ tc.function.arguments }})</div>
-                </div>
-              {% endfor %}
-              {% if msg.content %}{{ msg.content }}{% endif %}
-            {% else %}
-              {{ msg.content }}
+            {% if msg.role == 'assistant' and msg.get('tool_calls') %}
+              <div class="mcp-badge">MCP &middot; {{ msg.tool_calls|map(attribute='function.name')|join(', ') }}</div>
             {% endif %}
+            {{ msg.content or '' }}
           </div>
         </div>
+        {% endif %}
       {% endfor %}
     {% else %}
       <div class="welcome">

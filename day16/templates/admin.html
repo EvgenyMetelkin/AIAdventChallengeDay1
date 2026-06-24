@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% block body_class %}admin-page{% endblock %}
 {% block title %}Admin Panel{% endblock %}
 
 {% block body %}
@@ -168,4 +169,133 @@
     {% endfor %}
   {% endif %}
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  function getById(id) { return document.getElementById(id); }
+
+  function pollMcpStatus() {
+    fetch("/api/admin/mcp/status")
+      .then(function(r) { return r.json(); })
+      .then(function(status) {
+        var dot = document.querySelector(".mcp-status-dot");
+        if (dot) {
+          dot.className = "mcp-status-dot " + (status.connected ? "connected" : "disconnected");
+        }
+        var statusLabel = document.querySelector(".mcp-card .card-header h3 span:last-child");
+        if (statusLabel) {
+          statusLabel.textContent = status.connected ? "Connected" : "Disconnected";
+        }
+        var statsSpans = document.querySelectorAll(".mcp-stats span");
+        if (statsSpans.length >= 3) {
+          statsSpans[0].innerHTML = "Tools: <strong>" + status.tools_count + "</strong>";
+          statsSpans[1].innerHTML = "Resources: <strong>" + status.resources_count + "</strong>";
+          statsSpans[2].innerHTML = "Templates: <strong>" + status.templates_count + "</strong>";
+        }
+        var errDiv = document.querySelector(".mcp-error");
+        if (status.last_error) {
+          if (errDiv) {
+            errDiv.textContent = status.last_error;
+          } else {
+            var info = document.querySelector(".mcp-info");
+            if (info) {
+              var d = document.createElement("div");
+              d.className = "mcp-error";
+              d.textContent = status.last_error;
+              info.appendChild(d);
+            }
+          }
+        } else if (errDiv) {
+          errDiv.remove();
+        }
+        var toolsList = document.querySelector(".mcp-tools-list");
+        if (toolsList && status.tools) {
+          toolsList.innerHTML = status.tools.map(function(t) {
+            return '<div class="mcp-tool-item"><div class="mcp-tool-name">'
+              + t.name + '</div><div class="mcp-tool-desc">'
+              + (t.description || "") + '</div></div>';
+          }).join("");
+        }
+        var resList = document.querySelector(".mcp-resources-list");
+        if (resList && status.resources) {
+          resList.innerHTML = status.resources.map(function(r) {
+            return '<div class="mcp-resource-item"><div class="mcp-resource-name">'
+              + r.name + '</div><code class="mcp-resource-uri">'
+              + r.uri + '</code></div>';
+          }).join("");
+        }
+        var disconnectBtn = document.querySelector(".mcp-actions form[action='/admin/mcp/disconnect'] button");
+        var refreshBtn = document.querySelector(".mcp-actions form[action='/admin/mcp/refresh'] button");
+        if (disconnectBtn) disconnectBtn.disabled = !status.connected;
+        if (refreshBtn) refreshBtn.disabled = !status.connected;
+      })
+      .catch(function() {});
+  }
+
+  setInterval(pollMcpStatus, 2000);
+
+  var connectForm = document.querySelector(".mcp-config-form");
+  if (connectForm) {
+    connectForm.addEventListener("submit", function(e) {
+      e.preventDefault();
+      var formData = new FormData(connectForm);
+      fetch(connectForm.action, { method: "POST", body: formData })
+        .then(function() {
+          var attempts = 0;
+          function rapidPoll() {
+            attempts++;
+            fetch("/api/admin/mcp/status")
+              .then(function(r) { return r.json(); })
+              .then(function(s) {
+                pollMcpStatus();
+                if (!s.connected && attempts < 15) {
+                  setTimeout(rapidPoll, 1000);
+                } else {
+                  pollMcpStatus();
+                }
+              })
+              .catch(function() {
+                if (attempts < 15) setTimeout(rapidPoll, 1000);
+              });
+          }
+          rapidPoll();
+        });
+    });
+  }
+
+  var mcpActions = document.querySelector(".mcp-actions");
+  if (mcpActions) {
+    mcpActions.querySelectorAll("form").forEach(function(f) {
+      f.addEventListener("submit", function(e) {
+        e.preventDefault();
+        var fd = new FormData(f);
+        fetch(f.action, { method: "POST", body: fd })
+          .then(function() {
+            var attempts = 0;
+            function rapidPoll() {
+              attempts++;
+              fetch("/api/admin/mcp/status")
+                .then(function(r) { return r.json(); })
+                .then(function(s) {
+                  pollMcpStatus();
+                  var stable = f.action.indexOf("disconnect") >= 0 ? !s.connected : s.connected;
+                  if (!stable && attempts < 10) {
+                    setTimeout(rapidPoll, 800);
+                  } else {
+                    pollMcpStatus();
+                  }
+                })
+                .catch(function() {
+                  if (attempts < 10) setTimeout(rapidPoll, 800);
+                });
+            }
+            rapidPoll();
+          });
+      });
+    });
+  }
+})();
+</script>
 {% endblock %}

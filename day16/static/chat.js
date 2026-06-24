@@ -84,6 +84,7 @@ document.addEventListener("DOMContentLoaded", () => {
       appendMessage("user", message);
 
       const assistantMsgEl = appendMessage("assistant", "", true);
+      var toolsUsed = [];
 
       try {
         const formData = new FormData();
@@ -122,25 +123,49 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
               }
               if (data.done) {
-                assistantMsgEl.querySelector(".message-content").classList.remove("streaming-cursor");
+                var cd = assistantMsgEl.querySelector(".message-content");
+                cd.classList.remove("streaming-cursor");
+                if (assistantMsgEl._streamSpan) {
+                  delete assistantMsgEl._streamSpan;
+                }
                 return;
               }
               if (data.tool_call) {
-                appendToolBlock(assistantMsgEl, data.tool_call);
+                toolsUsed.push(data.tool_call.name);
+                var cd = assistantMsgEl.querySelector(".message-content");
+                if (cd.classList.contains("loading")) {
+                  cd.classList.remove("loading");
+                }
+                cd.textContent = "MCP \u00B7 " + toolsUsed.join(", ");
                 continue;
               }
               if (data.tool_result) {
-                updateToolResult(assistantMsgEl, data.tool_result);
                 continue;
               }
               if (data.token) {
-                const contentDiv = assistantMsgEl.querySelector(".message-content");
-                if (contentDiv.classList.contains("loading")) {
+                var contentDiv = assistantMsgEl.querySelector(".message-content");
+                if (toolsUsed.length > 0 && !contentDiv.querySelector(".mcp-badge")) {
                   contentDiv.classList.remove("loading");
-                  contentDiv.classList.add("streaming-cursor");
                   contentDiv.textContent = "";
+                  var badge = document.createElement("div");
+                  badge.className = "mcp-badge";
+                  badge.textContent = "MCP \u00B7 " + toolsUsed.join(", ");
+                  contentDiv.appendChild(badge);
+                  assistantMsgEl._streamSpan = document.createElement("span");
+                  assistantMsgEl._streamSpan.textContent = data.token;
+                  contentDiv.appendChild(assistantMsgEl._streamSpan);
+                  contentDiv.classList.add("streaming-cursor");
+                  toolsUsed = [];
+                } else if (assistantMsgEl._streamSpan) {
+                  assistantMsgEl._streamSpan.textContent += data.token;
+                } else {
+                  if (contentDiv.classList.contains("loading")) {
+                    contentDiv.classList.remove("loading");
+                    contentDiv.classList.add("streaming-cursor");
+                    contentDiv.textContent = "";
+                  }
+                  contentDiv.textContent += data.token;
                 }
-                contentDiv.textContent += data.token;
                 scrollToBottom();
               }
             } catch (_) {}
@@ -182,65 +207,6 @@ document.addEventListener("DOMContentLoaded", () => {
       scrollToBottom();
     }
     return div;
-  }
-
-  function appendToolBlock(msgEl, toolCall) {
-    const contentDiv = msgEl.querySelector(".message-content");
-    if (contentDiv.classList.contains("loading")) {
-      contentDiv.classList.remove("loading");
-      contentDiv.textContent = "";
-    }
-
-    const block = document.createElement("div");
-    block.className = "tool-block";
-    block.setAttribute("data-tool-id", toolCall.id);
-
-    const header = document.createElement("div");
-    header.className = "tool-block-header";
-    header.textContent = toolCall.name;
-    if (toolCall.arguments && Object.keys(toolCall.arguments).length) {
-      header.textContent += "(" + JSON.stringify(toolCall.arguments) + ")";
-    }
-    header.textContent += " ...";
-
-    const result = document.createElement("div");
-    result.className = "tool-block-result";
-    result.textContent = "";
-
-    block.appendChild(header);
-    block.appendChild(result);
-    contentDiv.appendChild(block);
-    scrollToBottom();
-  }
-
-  function updateToolResult(msgEl, toolResult) {
-    const block = msgEl.querySelector('.tool-block[data-tool-id="' + toolResult.id + '"]');
-    if (!block) return;
-
-    const header = block.querySelector(".tool-block-header");
-    if (toolResult.result && toolResult.result.error) {
-      header.textContent = toolResult.name + ": error";
-      const result = block.querySelector(".tool-block-result");
-      result.textContent = toolResult.result.error;
-      result.classList.add("error");
-    } else {
-      if (toolResult.result && toolResult.result.arguments) {
-        header.textContent = toolResult.name + "("
-          + JSON.stringify(toolResult.result.arguments) + "): done";
-      } else {
-        header.textContent = toolResult.name + ": done";
-      }
-      const result = block.querySelector(".tool-block-result");
-      if (toolResult.result && toolResult.result.content) {
-        const texts = toolResult.result.content
-          .filter(function(c) { return c.type === "text"; })
-          .map(function(c) { return c.text; });
-        result.textContent = texts.join("\n") || "ok";
-      } else {
-        result.textContent = JSON.stringify(toolResult.result, null, 2);
-      }
-    }
-    scrollToBottom();
   }
 
   function scrollToBottom() {

@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/style.css">
   {% block head %}{% endblock %}
 </head>
-<body>
+<body class="{% block body_class %}{% endblock %}">
   {% block body %}{% endblock %}
   <script src="/static/chat.js"></script>
   {% block scripts %}{% endblock %}

@@ -354,6 +354,22 @@ async def admin_mcp_disconnect(request: Request):
     return RedirectResponse("/admin", status_code=302)
 
 
+@app.get("/api/admin/mcp/status")
+async def admin_mcp_status(request: Request):
+    status = mcp_client.get_status()
+    return JSONResponse({
+        "connected": status["connected"],
+        "server_url": status.get("server_url", ""),
+        "transport": status.get("transport", ""),
+        "tools_count": status["tools_count"],
+        "resources_count": status["resources_count"],
+        "templates_count": status["templates_count"],
+        "tools": status.get("tools", []),
+        "resources": status.get("resources", []),
+        "last_error": status.get("last_error", ""),
+    })
+
+
 @app.post("/admin/mcp/refresh")
 async def admin_mcp_refresh(request: Request):
     if mcp_client.connected:
