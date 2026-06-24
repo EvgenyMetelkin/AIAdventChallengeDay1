@@ -1,0 +1,5 @@
+{
+  "server_url": "npx -y duckduckgo-websearch",
+  "transport": "stdio",
+  "env": {}
+}

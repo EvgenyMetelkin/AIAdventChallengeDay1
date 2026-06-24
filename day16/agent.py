@@ -256,39 +256,45 @@ class Agent:
 
         return assistant_message
 
-    async def send_message_stream(self, user_message: str) -> AsyncGenerator[str, None]:
-        """
-        Отправить сообщение LLM и получать ответ по токенам (streaming).
-        
-        Args:
-            user_message: сообщение пользователя
-            
-        Yields:
-            str: токены ответа от LLM
-        """
-        if not self.user:
-            raise Exception("No user selected. Please select a user first.")
-        
-        # Проверяем наличие текущего агента
+    def _get_history(self) -> list:
         if self.user.current_agent_id is None or self.user.current_agent_id not in self.user.agents:
             default_id = self.user.add_agent("default")
             self.user.current_agent_id = default_id
             self.user.save_agents()
-        
-        # Получаем текущую историю
-        history = self.user.get_current_history()
-        
-        # Добавляем сообщение пользователя в историю
-        history.append({"role": "user", "content": user_message})
-        
-        # Формируем messages
+        return self.user.get_current_history()
+
+    def _build_messages_for_api(self, history: list) -> list:
         messages = []
         system_prompt = self.user.get_system_prompt()
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
-        
+
         for msg in history:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+            role = msg.get("role", "")
+            if role == "tool":
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.get("tool_call_id", ""),
+                    "name": msg.get("name", ""),
+                    "content": msg.get("content", ""),
+                })
+            elif role == "assistant" and "tool_calls" in msg:
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.get("content"),
+                    "tool_calls": msg["tool_calls"],
+                })
+            else:
+                messages.append({"role": role, "content": msg.get("content", "")})
+        return messages
+
+    async def send_message_stream(self, user_message: str) -> AsyncGenerator[str, None]:
+        if not self.user:
+            raise Exception("No user selected. Please select a user first.")
+
+        history = self._get_history()
+        history.append({"role": "user", "content": user_message})
+        messages = self._build_messages_for_api(history)
 
         url = f"{self.base_url}/chat/completions"
         headers = {
@@ -332,6 +338,192 @@ class Agent:
             raise Exception(f"HTTP error {e.response.status_code}: {error_detail}")
         except httpx.RequestError as e:
             raise Exception(f"Network error: {str(e)}")
+
+    async def chat_with_tools(
+        self,
+        user_message: str,
+        tools: list,
+        call_tool_fn,
+    ) -> list:
+        """
+        Send user message to LLM with tool support. Manages tool-calling loop.
+
+        Args:
+            user_message: user's message
+            tools: OpenAI-format tools list
+            call_tool_fn: async callable (name, arguments) -> result dict
+
+        Returns:
+            list of SSE-compatible event dicts:
+                {"token": str} — streaming token
+                {"tool_call": {"id": str, "name": str, "arguments": dict}}
+                {"tool_result": {"id": str, "name": str, "result": dict}}
+                {"error": str}
+                {"done": True}
+        """
+        events: list = []
+
+        if not self.user:
+            events.append({"error": "No user selected"})
+            return events
+
+        history = self._get_history()
+        history.append({"role": "user", "content": user_message})
+
+        max_iterations = 10
+        for iteration in range(max_iterations):
+            messages = self._build_messages_for_api(history)
+
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": self.max_tokens,
+                "stream": True,
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+
+            url = f"{self.base_url}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+
+            self._log(f"Tool-loop iteration {iteration + 1}, {len(tools)} tools")
+
+            try:
+                tool_calls_by_index: dict[int, dict] = {}
+                content_tokens: list[str] = []
+                finish_reason: Optional[str] = None
+
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    async with client.stream("POST", url, json=payload, headers=headers) as response:
+                        response.raise_for_status()
+                        async for line in response.aiter_lines():
+                            if not line.startswith("data: "):
+                                continue
+                            data_str = line[6:]
+                            if data_str.strip() == "[DONE]":
+                                break
+                            try:
+                                data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
+
+                            choice = data.get("choices", [{}])[0]
+                            delta = choice.get("delta", {})
+                            finish_reason = choice.get("finish_reason") or finish_reason
+
+                            delta_content = delta.get("content", "")
+                            if delta_content and not tool_calls_by_index:
+                                content_tokens.append(delta_content)
+                                events.append({"token": delta_content})
+
+                            delta_tool_calls = delta.get("tool_calls", [])
+                            for tc in delta_tool_calls:
+                                idx = tc.get("index", 0)
+                                if idx not in tool_calls_by_index:
+                                    tool_calls_by_index[idx] = {
+                                        "id": tc.get("id", ""),
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""},
+                                    }
+                                entry = tool_calls_by_index[idx]
+                                if tc.get("id"):
+                                    entry["id"] = tc["id"]
+                                func = tc.get("function", {})
+                                if func.get("name"):
+                                    entry["function"]["name"] += func["name"]
+                                if func.get("arguments"):
+                                    entry["function"]["arguments"] += func["arguments"]
+
+                self.user.save_agents()
+
+                if tool_calls_by_index:
+                    tool_calls_list = [
+                        tool_calls_by_index[i] for i in sorted(tool_calls_by_index)
+                    ]
+                    assistant_msg = {
+                        "role": "assistant",
+                        "content": "".join(content_tokens) if content_tokens else None,
+                        "tool_calls": tool_calls_list,
+                    }
+                    history.append(assistant_msg)
+
+                    for tc in tool_calls_list:
+                        name = tc["function"]["name"]
+                        try:
+                            arguments = json.loads(tc["function"]["arguments"])
+                        except json.JSONDecodeError:
+                            arguments = {}
+
+                        events.append({
+                            "tool_call": {
+                                "id": tc["id"],
+                                "name": name,
+                                "arguments": arguments,
+                            }
+                        })
+
+                        try:
+                            result = await call_tool_fn(name, arguments)
+                        except Exception as e:
+                            result = {"name": name, "arguments": arguments, "error": str(e)}
+                            events.append({"error": f"Tool '{name}' failed: {e}"})
+
+                        events.append({
+                            "tool_result": {
+                                "id": tc["id"],
+                                "name": name,
+                                "result": result,
+                            }
+                        })
+
+                        history.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": name,
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        })
+
+                    self.user.save_agents()
+                    continue
+
+                if finish_reason == "stop" or (not tool_calls_by_index and content_tokens):
+                    full_content = "".join(content_tokens)
+                    history.append({"role": "assistant", "content": full_content})
+                    self.user.save_agents()
+                    events.append({"done": True})
+                    return events
+
+                if content_tokens:
+                    full_content = "".join(content_tokens)
+                    history.append({"role": "assistant", "content": full_content})
+                    self.user.save_agents()
+                    events.append({"done": True})
+                    return events
+
+                events.append({"error": "No response from LLM"})
+                return events
+
+            except httpx.TimeoutException:
+                events.append({"error": f"Request timed out after {self.timeout} seconds."})
+                return events
+            except httpx.HTTPStatusError as e:
+                try:
+                    detail = e.response.json().get("error", {}).get("message", str(e))
+                except Exception:
+                    detail = str(e)
+                events.append({"error": f"HTTP error {e.response.status_code}: {detail}"})
+                return events
+            except httpx.RequestError as e:
+                events.append({"error": f"Network error: {str(e)}"})
+                return events
+
+        events.append({"error": "Tool loop exceeded maximum iterations"})
+        return events
 
     def get_agent_info(self) -> Dict:
         """Возвращает информацию об агенте."""

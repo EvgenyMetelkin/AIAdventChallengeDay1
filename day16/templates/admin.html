@@ -6,6 +6,111 @@
   <h1>Admin Panel</h1>
   <a href="/" class="back">Back to Chat</a>
 
+  <h2>MCP Connection</h2>
+  <div class="admin-card mcp-card">
+    <div class="card-header">
+      <h3>
+        <span class="mcp-status-dot {{ 'connected' if mcp_status.connected else 'disconnected' }}"></span>
+        MCP Server
+        <span style="font-weight:400;font-size:12px;color:var(--text-secondary);">
+          {% if mcp_status.connected %}Connected{% else %}Disconnected{% endif %}
+        </span>
+      </h3>
+    </div>
+
+    <div class="mcp-info">
+      {% if mcp_status.server_url %}
+      <div class="mcp-info-row">
+        <span class="mcp-info-label">URL:</span>
+        <code>{{ mcp_status.server_url }}</code>
+        <span class="mcp-info-label" style="margin-left:16px;">Transport:</span>
+        <code>{{ mcp_status.transport }}</code>
+      </div>
+      {% endif %}
+      <div class="mcp-stats">
+        <span>Tools: <strong>{{ mcp_status.tools_count }}</strong></span>
+        <span>Resources: <strong>{{ mcp_status.resources_count }}</strong></span>
+        <span>Templates: <strong>{{ mcp_status.templates_count }}</strong></span>
+      </div>
+      {% if mcp_status.last_error %}
+      <div class="mcp-error">{{ mcp_status.last_error }}</div>
+      {% endif %}
+    </div>
+
+    <form class="admin-form mcp-config-form" method="post" action="/admin/mcp/connect">
+      <input type="text" name="server_url"
+        placeholder="{% if mcp_status.transport == 'stdio' %}npx -y @modelcontextprotocol/server-filesystem /tmp{% else %}MCP server URL{% endif %}"
+        value="{{ mcp_status.server_url }}" style="flex:2;">
+      <select name="transport" style="flex:0 0 170px;">
+        <option value="streamable_http" {% if mcp_status.transport == 'streamable_http' %}selected{% endif %}>streamable_http</option>
+        <option value="sse" {% if mcp_status.transport == 'sse' %}selected{% endif %}>sse</option>
+        <option value="stdio" {% if mcp_status.transport == 'stdio' %}selected{% endif %}>stdio</option>
+      </select>
+      <button type="submit" class="btn-create">Connect</button>
+    </form>
+
+    <div class="admin-actions mcp-actions">
+      <form method="post" action="/admin/mcp/disconnect" style="display:inline;">
+        <button type="submit" class="btn-delete" {% if not mcp_status.connected %}disabled{% endif %}>Disconnect</button>
+      </form>
+      <form method="post" action="/admin/mcp/refresh" style="display:inline;">
+        <button type="submit" class="btn-create" {% if not mcp_status.connected %}disabled{% endif %}>Refresh Tools</button>
+      </form>
+    </div>
+
+    {% if mcp_status.transport == 'stdio' %}
+    <div class="mcp-env-section">
+      <h4 style="font-size:13px;margin-bottom:6px;color:var(--text-secondary);">Environment Variables</h4>
+      <form method="post" action="/admin/mcp/env" class="mcp-env-form">
+        <div class="mcp-env-list">
+          {% set env_idx = namespace(value=0) %}
+          {% for key, val in (mcp_status.env or {}).items() %}
+          <div class="mcp-env-row">
+            <input type="text" name="env_key_{{ env_idx.value }}" value="{{ key }}" readonly class="mcp-env-key">
+            <input type="password" name="env_val_{{ env_idx.value }}" value="{{ val }}" class="mcp-env-val" autocomplete="off">
+            <button type="submit" name="env_remove" value="{{ key }}" class="btn-delete mcp-env-remove" title="Remove {{ key }}">x</button>
+          </div>
+          {% set env_idx.value = env_idx.value + 1 %}
+          {% endfor %}
+        </div>
+        <div class="mcp-env-row mcp-env-new">
+          <input type="text" name="env_new_key" placeholder="KEY" class="mcp-env-key">
+          <input type="text" name="env_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">
+          <button type="submit" class="btn-create mcp-env-add">+ Add</button>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if mcp_status.tools_count > 0 %}
+  <div class="admin-card">
+    <h3 style="margin-bottom:8px;">MCP Tools ({{ mcp_status.tools_count }})</h3>
+    <div class="mcp-tools-list">
+      {% for tool in mcp_status.tools %}
+      <div class="mcp-tool-item">
+        <div class="mcp-tool-name">{{ tool.name }}</div>
+        <div class="mcp-tool-desc">{{ tool.description }}</div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  {% if mcp_status.resources_count > 0 %}
+  <div class="admin-card">
+    <h3 style="margin-bottom:8px;">MCP Resources ({{ mcp_status.resources_count }})</h3>
+    <div class="mcp-resources-list">
+      {% for res in mcp_status.resources %}
+      <div class="mcp-resource-item">
+        <div class="mcp-resource-name">{{ res.name }}</div>
+        <code class="mcp-resource-uri">{{ res.uri }}</code>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
   <h2>Users</h2>
   <form class="admin-form" method="post" action="/admin/user/create">
     <input type="text" name="name" placeholder="User name" required>

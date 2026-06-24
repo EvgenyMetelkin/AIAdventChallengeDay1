@@ -93,8 +93,26 @@
     {% if current_user and history %}
       {% for msg in history %}
         <div class="message {{ msg.role }}">
-          <div class="message-icon">{{ 'U' if msg.role == 'user' else 'A' }}</div>
-          <div class="message-content">{{ msg.content }}</div>
+          <div class="message-icon">
+            {% if msg.role == 'user' %}U
+            {% elif msg.role == 'tool' %}T
+            {% else %}A{% endif %}
+          </div>
+          <div class="message-content">
+            {% if msg.role == 'tool' %}
+              <span class="tool-name">{{ msg.get('name', 'tool') }}</span>
+              <span class="tool-output">{{ msg.content }}</span>
+            {% elif msg.role == 'assistant' and msg.get('tool_calls') %}
+              {% for tc in msg.tool_calls %}
+                <div class="tool-block">
+                  <div class="tool-block-header">{{ tc.function.name }}({{ tc.function.arguments }})</div>
+                </div>
+              {% endfor %}
+              {% if msg.content %}{{ msg.content }}{% endif %}
+            {% else %}
+              {{ msg.content }}
+            {% endif %}
+          </div>
         </div>
       {% endfor %}
     {% else %}

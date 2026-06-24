@@ -125,6 +125,14 @@ document.addEventListener("DOMContentLoaded", () => {
                 assistantMsgEl.querySelector(".message-content").classList.remove("streaming-cursor");
                 return;
               }
+              if (data.tool_call) {
+                appendToolBlock(assistantMsgEl, data.tool_call);
+                continue;
+              }
+              if (data.tool_result) {
+                updateToolResult(assistantMsgEl, data.tool_result);
+                continue;
+              }
               if (data.token) {
                 const contentDiv = assistantMsgEl.querySelector(".message-content");
                 if (contentDiv.classList.contains("loading")) {
@@ -174,6 +182,65 @@ document.addEventListener("DOMContentLoaded", () => {
       scrollToBottom();
     }
     return div;
+  }
+
+  function appendToolBlock(msgEl, toolCall) {
+    const contentDiv = msgEl.querySelector(".message-content");
+    if (contentDiv.classList.contains("loading")) {
+      contentDiv.classList.remove("loading");
+      contentDiv.textContent = "";
+    }
+
+    const block = document.createElement("div");
+    block.className = "tool-block";
+    block.setAttribute("data-tool-id", toolCall.id);
+
+    const header = document.createElement("div");
+    header.className = "tool-block-header";
+    header.textContent = toolCall.name;
+    if (toolCall.arguments && Object.keys(toolCall.arguments).length) {
+      header.textContent += "(" + JSON.stringify(toolCall.arguments) + ")";
+    }
+    header.textContent += " ...";
+
+    const result = document.createElement("div");
+    result.className = "tool-block-result";
+    result.textContent = "";
+
+    block.appendChild(header);
+    block.appendChild(result);
+    contentDiv.appendChild(block);
+    scrollToBottom();
+  }
+
+  function updateToolResult(msgEl, toolResult) {
+    const block = msgEl.querySelector('.tool-block[data-tool-id="' + toolResult.id + '"]');
+    if (!block) return;
+
+    const header = block.querySelector(".tool-block-header");
+    if (toolResult.result && toolResult.result.error) {
+      header.textContent = toolResult.name + ": error";
+      const result = block.querySelector(".tool-block-result");
+      result.textContent = toolResult.result.error;
+      result.classList.add("error");
+    } else {
+      if (toolResult.result && toolResult.result.arguments) {
+        header.textContent = toolResult.name + "("
+          + JSON.stringify(toolResult.result.arguments) + "): done";
+      } else {
+        header.textContent = toolResult.name + ": done";
+      }
+      const result = block.querySelector(".tool-block-result");
+      if (toolResult.result && toolResult.result.content) {
+        const texts = toolResult.result.content
+          .filter(function(c) { return c.type === "text"; })
+          .map(function(c) { return c.text; });
+        result.textContent = texts.join("\n") || "ok";
+      } else {
+        result.textContent = JSON.stringify(toolResult.result, null, 2);
+      }
+    }
+    scrollToBottom();
   }
 
   function scrollToBottom() {

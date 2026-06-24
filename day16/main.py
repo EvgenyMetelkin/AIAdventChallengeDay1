@@ -1,6 +1,8 @@
+import asyncio
 import json
 import os
 import uuid
+from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -12,11 +14,16 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from user import User, UserManager
 from agent import Agent
+from mcp_client import MCPClientManager
 
 API_KEY = os.getenv("OPENAI_API_KEY", "")
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
 SECRET_KEY = os.getenv("SECRET_KEY", uuid.uuid4().hex)
 USERS_DIR = "users"
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "")
+MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "streamable_http")
+VERBOSE = os.getenv("VERBOSE", "False").lower() == "true"
+MCP_CONFIG_FILE = "mcp_config.json"
 
 app = FastAPI(title="AI Chat")
 app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY)
@@ -24,7 +31,65 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
 user_manager = UserManager(users_dir=USERS_DIR)
-agent = Agent(api_key=API_KEY, base_url=BASE_URL)
+agent = Agent(api_key=API_KEY, base_url=BASE_URL, verbose=VERBOSE)
+
+
+def _load_mcp_config() -> tuple[str, str, dict]:
+    if os.path.exists(MCP_CONFIG_FILE):
+        try:
+            with open(MCP_CONFIG_FILE, encoding="utf-8") as f:
+                cfg = json.load(f)
+            url = cfg.get("server_url", MCP_SERVER_URL)
+            transport = cfg.get("transport", MCP_TRANSPORT)
+            env = cfg.get("env", {})
+            return url, transport, env
+        except Exception:
+            pass
+    return MCP_SERVER_URL, MCP_TRANSPORT, {}
+
+
+def _save_mcp_config(url: str, transport: str, env: Optional[dict] = None):
+    existing = {}
+    if os.path.exists(MCP_CONFIG_FILE):
+        try:
+            with open(MCP_CONFIG_FILE, encoding="utf-8") as f:
+                existing = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            pass
+    existing["server_url"] = url
+    existing["transport"] = transport
+    if env is not None:
+        existing["env"] = dict(env)
+    with open(MCP_CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(existing, f, indent=2, ensure_ascii=False)
+
+
+_mcp_url, _mcp_transport, _mcp_env = _load_mcp_config()
+mcp_client = MCPClientManager(
+    server_url=_mcp_url,
+    transport=_mcp_transport,
+    verbose=VERBOSE,
+    env=_mcp_env,
+)
+
+
+_mcp_bg_task = None
+
+
+@app.on_event("startup")
+async def startup():
+    if _mcp_url:
+        global _mcp_bg_task
+        _mcp_bg_task = asyncio.create_task(_mcp_connect_bg(_mcp_url))
+
+
+async def _mcp_connect_bg(url: str):
+    await mcp_client.connect()
+    if mcp_client.connected:
+        print(f"[STARTUP] MCP connected to {url} "
+              f"({len(mcp_client.get_cached_tools())} tools)")
+    else:
+        print(f"[STARTUP] MCP connection failed, continuing without tools")
 
 
 def init_demo():
@@ -112,19 +177,32 @@ async def chat_stream(request: Request, message: str = Form(...)):
     agent.temperature = user.get_default_temperature()
     agent.max_tokens = user.get_default_max_tokens()
 
-    async def generate():
-        full_response = ""
-        try:
-            async for token in agent.send_message_stream(message):
-                full_response += token
-                yield f"data: {json.dumps({'token': token})}\n\n"
+    mcp_available = mcp_client.connected or (MCP_SERVER_URL and await mcp_client.ensure_connected())
+    tools = mcp_client.tools_to_openai_format() if mcp_available else []
 
-            history = user.get_current_history()
-            history.append({"role": "assistant", "content": full_response})
-            user.save_agents()
-            yield f"data: {json.dumps({'done': True})}\n\n"
+    async def generate():
+        try:
+            if tools:
+                async def call_tool_wrapper(name: str, arguments: dict) -> dict:
+                    if not mcp_client.connected:
+                        await mcp_client.ensure_connected()
+                    return await mcp_client.call_tool(name, arguments)
+
+                events = await agent.chat_with_tools(message, tools, call_tool_wrapper)
+                for evt in events:
+                    yield f"data: {json.dumps(evt, ensure_ascii=False)}\n\n"
+            else:
+                full_response = ""
+                async for token in agent.send_message_stream(message):
+                    full_response += token
+                    yield f"data: {json.dumps({'token': token}, ensure_ascii=False)}\n\n"
+
+                history = user.get_current_history()
+                history.append({"role": "assistant", "content": full_response})
+                user.save_agents()
+                yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as e:
-            yield f"data: {json.dumps({'error': str(e)})}\n\n"
+            yield f"data: {json.dumps({'error': str(e)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
@@ -195,7 +273,10 @@ async def admin(request: Request):
                                "history_length": len(v.get("history", []))}
                            for k, v in user_obj.agents.items()},
             })
-    return templates.TemplateResponse("admin.html", {"request": request, "users": users_data})
+    mcp_status = mcp_client.get_status()
+    return templates.TemplateResponse("admin.html", {
+        "request": request, "users": users_data, "mcp_status": mcp_status,
+    })
 
 
 @app.post("/admin/user/create")
@@ -235,4 +316,73 @@ async def admin_reset_agent(request: Request, user_id: str = Form(...), agent_id
         user.reset_current_history()
         user.current_agent_id = saved
         user.save_agents()
+    return RedirectResponse("/admin", status_code=302)
+
+
+@app.post("/admin/mcp/connect")
+async def admin_mcp_connect(request: Request, server_url: str = Form(...),
+                            transport: str = Form("streamable_http")):
+    global _mcp_bg_task
+    _save_mcp_config(server_url, transport, env=mcp_client.env)
+    if transport == "stdio":
+        mcp_client.server_url = server_url
+    else:
+        mcp_client.server_url = server_url.rstrip("/")
+    mcp_client.transport = transport or "streamable_http"
+    if _mcp_bg_task and not _mcp_bg_task.done():
+        _mcp_bg_task.cancel()
+    _mcp_bg_task = asyncio.create_task(_mcp_reconnect_bg())
+    return RedirectResponse("/admin", status_code=302)
+
+
+async def _mcp_reconnect_bg():
+    try:
+        await mcp_client.reconfigure(mcp_client.server_url, mcp_client.transport)
+    except Exception:
+        pass
+
+
+@app.post("/admin/mcp/disconnect")
+async def admin_mcp_disconnect(request: Request):
+    global _mcp_bg_task
+    if _mcp_bg_task and not _mcp_bg_task.done():
+        _mcp_bg_task.cancel()
+        _mcp_bg_task = None
+    await mcp_client.disconnect()
+    mcp_client.server_url = ""
+    _save_mcp_config("", mcp_client.transport, env=mcp_client.env)
+    return RedirectResponse("/admin", status_code=302)
+
+
+@app.post("/admin/mcp/refresh")
+async def admin_mcp_refresh(request: Request):
+    if mcp_client.connected:
+        await mcp_client.refresh_tools()
+    return RedirectResponse("/admin", status_code=302)
+
+
+@app.post("/admin/mcp/env")
+async def admin_mcp_env(request: Request):
+    form = await request.form()
+    new_env: dict = {}
+    i = 0
+    while True:
+        key = form.get(f"env_key_{i}", "").strip()
+        val = form.get(f"env_val_{i}", "").strip()
+        if not key:
+            break
+        new_env[key] = val
+        i += 1
+
+    new_key = form.get("env_new_key", "").strip()
+    new_val = form.get("env_new_val", "").strip()
+    if new_key:
+        new_env[new_key] = new_val
+
+    remove_key = form.get("env_remove", "").strip()
+    if remove_key and remove_key in new_env:
+        del new_env[remove_key]
+
+    mcp_client.env = new_env
+    _save_mcp_config(mcp_client.server_url, mcp_client.transport, env=new_env)
     return RedirectResponse("/admin", status_code=302)
