@@ -1,0 +1,6 @@
+/.venv
+.env
+**/venv/
+**/.codewhale/*
+!**/.codewhale/constitution.json
+.deepseek/

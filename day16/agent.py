@@ -7,7 +7,8 @@ from typing import List, Dict, Optional, AsyncGenerator
 import httpx
 from user import User
 
-# Настройка логирования
+# scp -r ~/VSCode/AIAdventChallengeDay1/day17/mcp_news_server/* root@85.139.69.186:/root/mcp_news_server/
+# Настройка логирования ~/VSCode/AIAdventChallengeDay1/day17
 logger = logging.getLogger(__name__)
 
 class Agent:

@@ -82,6 +82,30 @@
       </form>
     </div>
     {% endif %}
+
+    {% if mcp_status.transport in ('streamable_http', 'sse') %}
+    <div class="mcp-env-section">
+      <h4 style="font-size:13px;margin-bottom:6px;color:var(--text-secondary);">Custom Headers</h4>
+      <form method="post" action="/admin/mcp/headers" class="mcp-env-form">
+        <div class="mcp-env-list">
+          {% set hdr_idx = namespace(value=0) %}
+          {% for key, val in (mcp_status.headers or {}).items() %}
+          <div class="mcp-env-row">
+            <input type="text" name="hdr_key_{{ hdr_idx.value }}" value="{{ key }}" readonly class="mcp-env-key">
+            <input type="password" name="hdr_val_{{ hdr_idx.value }}" value="{{ val }}" class="mcp-env-val" autocomplete="off">
+            <button type="submit" name="hdr_remove" value="{{ key }}" class="btn-delete mcp-env-remove" title="Remove {{ key }}">x</button>
+          </div>
+          {% set hdr_idx.value = hdr_idx.value + 1 %}
+          {% endfor %}
+        </div>
+        <div class="mcp-env-row mcp-env-new">
+          <input type="text" name="hdr_new_key" placeholder="Header name" class="mcp-env-key">
+          <input type="text" name="hdr_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">
+          <button type="submit" class="btn-create mcp-env-add">+ Add</button>
+        </div>
+      </form>
+    </div>
+    {% endif %}
   </div>
 
   {% if mcp_status.tools_count > 0 %}

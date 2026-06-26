@@ -12,11 +12,13 @@ logger = logging.getLogger(__name__)
 
 class MCPClientManager:
     def __init__(self, server_url: str = "", transport: str = "streamable_http",
-                 verbose: bool = False, env: Optional[dict] = None):
+                 verbose: bool = False, env: Optional[dict] = None,
+                 headers: Optional[dict] = None):
         self.server_url = server_url.rstrip("/") if transport != "stdio" else server_url
         self.transport = transport
         self.verbose = verbose
         self.env: dict = dict(env) if env else {}
+        self.headers: dict = dict(headers) if headers else {}
 
         self._connected = False
         self._lock = asyncio.Lock()
@@ -70,7 +72,7 @@ class MCPClientManager:
                 return False
 
     async def _connect_http(self) -> bool:
-        self._http_client = httpx.AsyncClient(timeout=10.0)
+        self._http_client = httpx.AsyncClient(timeout=10.0, headers=self.headers)
         try:
             await self._initialize_http()
             self._connected = True
@@ -249,14 +251,18 @@ class MCPClientManager:
         elif "application/json" in ct:
             data = resp.json()
             if "error" in data:
-                raise Exception(f"MCP error: {data['error'].get('message', data['error'])}")
+                err = data["error"]
+                msg = err if isinstance(err, str) else err.get("message", str(err))
+                raise Exception(f"MCP error: {msg}")
             return data.get("result", data)
         else:
             text = resp.text
             try:
                 data = json.loads(text)
                 if "error" in data:
-                    raise Exception(f"MCP error: {data['error'].get('message', data['error'])}")
+                    err = data["error"]
+                    msg = err if isinstance(err, str) else err.get("message", str(err))
+                    raise Exception(f"MCP error: {msg}")
                 return data.get("result", data)
             except json.JSONDecodeError:
                 raise Exception(f"Unexpected MCP response: {text[:200]}")
@@ -483,7 +489,8 @@ class MCPClientManager:
             self._log(f"Read resource '{uri}' failed: {e}")
             return {"uri": uri, "error": str(e)}
 
-    async def reconfigure(self, server_url: str, transport: str = "streamable_http") -> bool:
+    async def reconfigure(self, server_url: str, transport: str = "streamable_http",
+                          headers: Optional[dict] = None) -> bool:
         self._log(f"Reconfiguring MCP: url={server_url}, transport={transport}")
         await self.disconnect()
         if transport == "stdio":
@@ -491,6 +498,8 @@ class MCPClientManager:
         else:
             self.server_url = server_url.rstrip("/") if server_url else ""
         self.transport = transport or "streamable_http"
+        if headers is not None:
+            self.headers = dict(headers)
         self._last_error = None
 
         if not self.server_url:
@@ -500,11 +509,13 @@ class MCPClientManager:
         return await self.connect()
 
     def get_status(self) -> dict:
+        masked_headers = {k: "***" for k in self.headers}
         return {
             "connected": self._connected,
             "server_url": self.server_url or "",
             "transport": self.transport,
             "env": dict(self.env),
+            "headers": masked_headers,
             "tools_count": len(self._tools_cache),
             "tools": self.get_cached_tools(),
             "resources_count": len(self._resources_cache),

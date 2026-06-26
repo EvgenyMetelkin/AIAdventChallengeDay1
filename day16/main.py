@@ -34,7 +34,7 @@ user_manager = UserManager(users_dir=USERS_DIR)
 agent = Agent(api_key=API_KEY, base_url=BASE_URL, verbose=VERBOSE)
 
 
-def _load_mcp_config() -> tuple[str, str, dict]:
+def _load_mcp_config() -> tuple[str, str, dict, dict]:
     if os.path.exists(MCP_CONFIG_FILE):
         try:
             with open(MCP_CONFIG_FILE, encoding="utf-8") as f:
@@ -42,13 +42,15 @@ def _load_mcp_config() -> tuple[str, str, dict]:
             url = cfg.get("server_url", MCP_SERVER_URL)
             transport = cfg.get("transport", MCP_TRANSPORT)
             env = cfg.get("env", {})
-            return url, transport, env
+            headers = cfg.get("headers", {})
+            return url, transport, env, headers
         except Exception:
             pass
-    return MCP_SERVER_URL, MCP_TRANSPORT, {}
+    return MCP_SERVER_URL, MCP_TRANSPORT, {}, {}
 
 
-def _save_mcp_config(url: str, transport: str, env: Optional[dict] = None):
+def _save_mcp_config(url: str, transport: str, env: Optional[dict] = None,
+                     headers: Optional[dict] = None):
     existing = {}
     if os.path.exists(MCP_CONFIG_FILE):
         try:
@@ -60,16 +62,19 @@ def _save_mcp_config(url: str, transport: str, env: Optional[dict] = None):
     existing["transport"] = transport
     if env is not None:
         existing["env"] = dict(env)
+    if headers is not None:
+        existing["headers"] = dict(headers)
     with open(MCP_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(existing, f, indent=2, ensure_ascii=False)
 
 
-_mcp_url, _mcp_transport, _mcp_env = _load_mcp_config()
+_mcp_url, _mcp_transport, _mcp_env, _mcp_headers = _load_mcp_config()
 mcp_client = MCPClientManager(
     server_url=_mcp_url,
     transport=_mcp_transport,
     verbose=VERBOSE,
     env=_mcp_env,
+    headers=_mcp_headers,
 )
 
 
@@ -323,7 +328,7 @@ async def admin_reset_agent(request: Request, user_id: str = Form(...), agent_id
 async def admin_mcp_connect(request: Request, server_url: str = Form(...),
                             transport: str = Form("streamable_http")):
     global _mcp_bg_task
-    _save_mcp_config(server_url, transport, env=mcp_client.env)
+    _save_mcp_config(server_url, transport, env=mcp_client.env, headers=mcp_client.headers)
     if transport == "stdio":
         mcp_client.server_url = server_url
     else:
@@ -350,7 +355,7 @@ async def admin_mcp_disconnect(request: Request):
         _mcp_bg_task = None
     await mcp_client.disconnect()
     mcp_client.server_url = ""
-    _save_mcp_config("", mcp_client.transport, env=mcp_client.env)
+    _save_mcp_config("", mcp_client.transport, env=mcp_client.env, headers=mcp_client.headers)
     return RedirectResponse("/admin", status_code=302)
 
 
@@ -400,5 +405,40 @@ async def admin_mcp_env(request: Request):
         del new_env[remove_key]
 
     mcp_client.env = new_env
-    _save_mcp_config(mcp_client.server_url, mcp_client.transport, env=new_env)
+    _save_mcp_config(mcp_client.server_url, mcp_client.transport,
+                     env=new_env, headers=mcp_client.headers)
+    return RedirectResponse("/admin", status_code=302)
+
+
+@app.post("/admin/mcp/headers")
+async def admin_mcp_headers(request: Request):
+    form = await request.form()
+    new_headers: dict = {}
+    i = 0
+    while True:
+        key = form.get(f"hdr_key_{i}", "").strip()
+        val = form.get(f"hdr_val_{i}", "").strip()
+        if not key:
+            break
+        new_headers[key] = val
+        i += 1
+
+    new_key = form.get("hdr_new_key", "").strip()
+    new_val = form.get("hdr_new_val", "").strip()
+    if new_key:
+        new_headers[new_key] = new_val
+
+    remove_key = form.get("hdr_remove", "").strip()
+    if remove_key and remove_key in new_headers:
+        del new_headers[remove_key]
+
+    mcp_client.headers = new_headers
+    if mcp_client.connected and mcp_client.transport != "stdio":
+        global _mcp_bg_task
+        if _mcp_bg_task and not _mcp_bg_task.done():
+            _mcp_bg_task.cancel()
+        _mcp_bg_task = asyncio.create_task(_mcp_reconnect_bg())
+
+    _save_mcp_config(mcp_client.server_url, mcp_client.transport,
+                     env=mcp_client.env, headers=new_headers)
     return RedirectResponse("/admin", status_code=302)

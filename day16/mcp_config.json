@@ -1,5 +1,8 @@
 {
-  "server_url": "npx -y duckduckgo-websearch",
-  "transport": "stdio",
-  "env": {}
+  "server_url": "http://185.139.69.186",
+  "transport": "streamable_http",
+  "env": {},
+  "headers": {
+    "X-API-Key": "7258af81935ddccb375677addb33e5d23b51cde0eefc4f57"
+  }
 }

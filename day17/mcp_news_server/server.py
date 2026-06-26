@@ -25,6 +25,20 @@ if not os.getenv("NEWS_API_KEY"):
 
 app = FastAPI(title="MCP News Server", version="1.0.0")
 
+MCP_AUTH_KEY = os.getenv("MCP_AUTH_KEY", "")
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if not MCP_AUTH_KEY or request.url.path == "/health":
+        return await call_next(request)
+    if request.headers.get("X-API-Key") != MCP_AUTH_KEY:
+        return Response(
+            content=json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "unauthorized"}}),
+            media_type="application/json",
+            status_code=401,
+        )
+    return await call_next(request)
+
 SERVER_NAME = "mcp-news-server"
 SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = "2024-11-05"
