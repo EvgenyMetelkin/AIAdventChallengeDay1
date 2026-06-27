@@ -11,6 +11,7 @@ from handlers import (
     handle_get_weather_by_coordinates,
     handle_get_weather_spb,
     handle_get_forecast_spb_16d,
+    handle_get_historical_spb_yearly,
     TOOLS_SCHEMA,
 )
 
@@ -107,6 +108,15 @@ async def _handle_method(method: str, params: dict, request_id: Any) -> tuple[Op
             elif tool_name == "get_forecast_spb_16d":
                 logger.info("Calling get_forecast_spb_16d")
                 result = await handle_get_forecast_spb_16d()
+                text_content = json.dumps(result, ensure_ascii=False, indent=2)
+                return _jsonrpc_ok(request_id, {
+                    "content": [{"type": "text", "text": text_content}],
+                    "isError": False,
+                }), None
+
+            elif tool_name == "get_historical_spb_yearly":
+                logger.info("Calling get_historical_spb_yearly")
+                result = await handle_get_historical_spb_yearly()
                 text_content = json.dumps(result, ensure_ascii=False, indent=2)
                 return _jsonrpc_ok(request_id, {
                     "content": [{"type": "text", "text": text_content}],
