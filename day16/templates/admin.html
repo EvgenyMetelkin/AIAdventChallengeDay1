@@ -7,133 +7,152 @@
   <h1>Admin Panel</h1>
   <a href="/" class="back">Back to Chat</a>
 
-  <h2>MCP Connection</h2>
-  <div class="admin-card mcp-card">
-    <div class="card-header">
-      <h3>
-        <span class="mcp-status-dot {{ 'connected' if mcp_status.connected else 'disconnected' }}"></span>
-        MCP Server
-        <span style="font-weight:400;font-size:12px;color:var(--text-secondary);">
-          {% if mcp_status.connected %}Connected{% else %}Disconnected{% endif %}
-        </span>
-      </h3>
-    </div>
+  <h2>MCP Servers</h2>
 
-    <div class="mcp-info">
-      {% if mcp_status.server_url %}
-      <div class="mcp-info-row">
-        <span class="mcp-info-label">URL:</span>
-        <code>{{ mcp_status.server_url }}</code>
-        <span class="mcp-info-label" style="margin-left:16px;">Transport:</span>
-        <code>{{ mcp_status.transport }}</code>
+  <form class="admin-form mcp-add-form" id="mcp-add-form">
+    <input type="text" name="name" placeholder="Server name" required>
+    <input type="text" name="server_url" placeholder="MCP server URL or stdio command" required style="flex:2;">
+    <select name="transport">
+      <option value="streamable_http">streamable_http</option>
+      <option value="sse">sse</option>
+      <option value="stdio">stdio</option>
+    </select>
+    <button type="submit" class="btn-create">Add Server</button>
+  </form>
+
+  <div id="mcp-servers-container">
+    {% for sid, srv in (mcp_servers or {}).items() %}
+    <div class="admin-card mcp-server-card" data-server-id="{{ sid }}">
+      <div class="card-header">
+        <h3>
+          <span class="mcp-status-dot {{ 'connected' if srv.connected else 'disconnected' }}"></span>
+          <span class="mcp-server-name">{{ srv.name }}</span>
+        </h3>
+        <div class="admin-actions" style="align-items:center;gap:8px;">
+          <label class="mcp-toggle-label">
+            <input type="checkbox" class="mcp-toggle" data-action="toggle" {% if srv.enabled %}checked{% endif %}>
+            <span class="mcp-toggle-text">{{ 'Enabled' if srv.enabled else 'Disabled' }}</span>
+          </label>
+          <button class="btn-delete" data-action="delete" title="Delete server">Delete</button>
+        </div>
+      </div>
+
+      <div class="mcp-info">
+        <div class="mcp-info-row">
+          <span class="mcp-info-label">URL:</span>
+          <code>{{ srv.server_url }}</code>
+          <span class="mcp-info-label" style="margin-left:16px;">Transport:</span>
+          <code>{{ srv.transport }}</code>
+        </div>
+        <div class="mcp-stats">
+          <span>Tools: <strong>{{ srv.tools_count }}</strong></span>
+          <span>Resources: <strong>{{ srv.resources_count }}</strong></span>
+          <span>Templates: <strong>{{ srv.templates_count }}</strong></span>
+          <span style="margin-left:auto;color:var(--text-secondary);font-size:12px;">
+            {% if srv.connected %}Connected{% else %}Disconnected{% endif %}
+          </span>
+        </div>
+        <div class="mcp-error" style="display: {{ 'block' if srv.last_error else 'none' }};">{{ srv.last_error or '' }}</div>
+      </div>
+
+      <form class="admin-form mcp-server-config-form" data-action="update">
+        <input type="text" name="server_url"
+          placeholder="{% if srv.transport == 'stdio' %}npx -y @modelcontextprotocol/server-filesystem /tmp{% else %}MCP server URL{% endif %}"
+          value="{{ srv.server_url }}" style="flex:2;">
+        <select name="transport" style="flex:0 0 170px;">
+          <option value="streamable_http" {% if srv.transport == 'streamable_http' %}selected{% endif %}>streamable_http</option>
+          <option value="sse" {% if srv.transport == 'sse' %}selected{% endif %}>sse</option>
+          <option value="stdio" {% if srv.transport == 'stdio' %}selected{% endif %}>stdio</option>
+        </select>
+        <button type="submit" class="btn-create">Connect</button>
+      </form>
+
+      <div class="admin-actions mcp-actions">
+        <button data-action="disconnect" {% if not srv.connected %}disabled{% endif %}>Disconnect</button>
+        <button data-action="refresh" {% if not srv.connected %}disabled{% endif %}>Refresh Tools</button>
+      </div>
+
+      {% if srv.transport == 'stdio' %}
+      <div class="mcp-env-section">
+        <h4>Environment Variables</h4>
+        <form class="mcp-env-form" data-action="env">
+          <div class="mcp-env-list">
+            {% set env_idx = namespace(value=0) %}
+            {% for key, val in (srv.env or {}).items() %}
+            <div class="mcp-env-row">
+              <input type="text" name="env_key_{{ env_idx.value }}" value="{{ key }}" readonly class="mcp-env-key">
+              <input type="password" name="env_val_{{ env_idx.value }}" value="{{ val }}" class="mcp-env-val" autocomplete="off">
+              <button type="submit" name="env_remove" value="{{ key }}" class="btn-delete mcp-env-remove" title="Remove {{ key }}">x</button>
+            </div>
+            {% set env_idx.value = env_idx.value + 1 %}
+            {% endfor %}
+          </div>
+          <div class="mcp-env-row mcp-env-new">
+            <input type="text" name="env_new_key" placeholder="KEY" class="mcp-env-key">
+            <input type="text" name="env_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">
+            <button type="submit" class="btn-create mcp-env-add">+ Add</button>
+          </div>
+        </form>
       </div>
       {% endif %}
-      <div class="mcp-stats">
-        <span>Tools: <strong>{{ mcp_status.tools_count }}</strong></span>
-        <span>Resources: <strong>{{ mcp_status.resources_count }}</strong></span>
-        <span>Templates: <strong>{{ mcp_status.templates_count }}</strong></span>
+
+      {% if srv.transport in ('streamable_http', 'sse') %}
+      <div class="mcp-env-section">
+        <h4>Custom Headers</h4>
+        <form class="mcp-env-form" data-action="headers">
+          <div class="mcp-env-list">
+            {% set hdr_idx = namespace(value=0) %}
+            {% for key, val in (srv.headers or {}).items() %}
+            <div class="mcp-env-row">
+              <input type="text" name="hdr_key_{{ hdr_idx.value }}" value="{{ key }}" readonly class="mcp-env-key">
+              <input type="password" name="hdr_val_{{ hdr_idx.value }}" value="{{ val }}" class="mcp-env-val" autocomplete="off">
+              <button type="submit" name="hdr_remove" value="{{ key }}" class="btn-delete mcp-env-remove" title="Remove {{ key }}">x</button>
+            </div>
+            {% set hdr_idx.value = hdr_idx.value + 1 %}
+            {% endfor %}
+          </div>
+          <div class="mcp-env-row mcp-env-new">
+            <input type="text" name="hdr_new_key" placeholder="Header name" class="mcp-env-key">
+            <input type="text" name="hdr_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">
+            <button type="submit" class="btn-create mcp-env-add">+ Add</button>
+          </div>
+        </form>
       </div>
-      {% if mcp_status.last_error %}
-      <div class="mcp-error">{{ mcp_status.last_error }}</div>
+      {% endif %}
+
+      {% if srv.tools_count > 0 %}
+      <div class="mcp-tools-section" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-color);">
+        <h4>Tools ({{ srv.tools_count }})</h4>
+        <div class="mcp-tools-list">
+          {% for tool in srv.tools %}
+          <div class="mcp-tool-item">
+            <div class="mcp-tool-name">{{ tool.name }}</div>
+            <div class="mcp-tool-desc">{{ tool.description }}</div>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {% if srv.resources_count > 0 %}
+      <div class="mcp-resources-section" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border-color);">
+        <h4>Resources ({{ srv.resources_count }})</h4>
+        <div class="mcp-resources-list">
+          {% for res in srv.resources %}
+          <div class="mcp-resource-item">
+            <div class="mcp-resource-name">{{ res.name }}</div>
+            <code class="mcp-resource-uri">{{ res.uri }}</code>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
       {% endif %}
     </div>
-
-    <form class="admin-form mcp-config-form" method="post" action="/admin/mcp/connect">
-      <input type="text" name="server_url"
-        placeholder="{% if mcp_status.transport == 'stdio' %}npx -y @modelcontextprotocol/server-filesystem /tmp{% else %}MCP server URL{% endif %}"
-        value="{{ mcp_status.server_url }}" style="flex:2;">
-      <select name="transport" style="flex:0 0 170px;">
-        <option value="streamable_http" {% if mcp_status.transport == 'streamable_http' %}selected{% endif %}>streamable_http</option>
-        <option value="sse" {% if mcp_status.transport == 'sse' %}selected{% endif %}>sse</option>
-        <option value="stdio" {% if mcp_status.transport == 'stdio' %}selected{% endif %}>stdio</option>
-      </select>
-      <button type="submit" class="btn-create">Connect</button>
-    </form>
-
-    <div class="admin-actions mcp-actions">
-      <form method="post" action="/admin/mcp/disconnect" style="display:inline;">
-        <button type="submit" class="btn-delete" {% if not mcp_status.connected %}disabled{% endif %}>Disconnect</button>
-      </form>
-      <form method="post" action="/admin/mcp/refresh" style="display:inline;">
-        <button type="submit" class="btn-create" {% if not mcp_status.connected %}disabled{% endif %}>Refresh Tools</button>
-      </form>
-    </div>
-
-    {% if mcp_status.transport == 'stdio' %}
-    <div class="mcp-env-section">
-      <h4 style="font-size:13px;margin-bottom:6px;color:var(--text-secondary);">Environment Variables</h4>
-      <form method="post" action="/admin/mcp/env" class="mcp-env-form">
-        <div class="mcp-env-list">
-          {% set env_idx = namespace(value=0) %}
-          {% for key, val in (mcp_status.env or {}).items() %}
-          <div class="mcp-env-row">
-            <input type="text" name="env_key_{{ env_idx.value }}" value="{{ key }}" readonly class="mcp-env-key">
-            <input type="password" name="env_val_{{ env_idx.value }}" value="{{ val }}" class="mcp-env-val" autocomplete="off">
-            <button type="submit" name="env_remove" value="{{ key }}" class="btn-delete mcp-env-remove" title="Remove {{ key }}">x</button>
-          </div>
-          {% set env_idx.value = env_idx.value + 1 %}
-          {% endfor %}
-        </div>
-        <div class="mcp-env-row mcp-env-new">
-          <input type="text" name="env_new_key" placeholder="KEY" class="mcp-env-key">
-          <input type="text" name="env_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">
-          <button type="submit" class="btn-create mcp-env-add">+ Add</button>
-        </div>
-      </form>
-    </div>
-    {% endif %}
-
-    {% if mcp_status.transport in ('streamable_http', 'sse') %}
-    <div class="mcp-env-section">
-      <h4 style="font-size:13px;margin-bottom:6px;color:var(--text-secondary);">Custom Headers</h4>
-      <form method="post" action="/admin/mcp/headers" class="mcp-env-form">
-        <div class="mcp-env-list">
-          {% set hdr_idx = namespace(value=0) %}
-          {% for key, val in (mcp_status.headers or {}).items() %}
-          <div class="mcp-env-row">
-            <input type="text" name="hdr_key_{{ hdr_idx.value }}" value="{{ key }}" readonly class="mcp-env-key">
-            <input type="password" name="hdr_val_{{ hdr_idx.value }}" value="{{ val }}" class="mcp-env-val" autocomplete="off">
-            <button type="submit" name="hdr_remove" value="{{ key }}" class="btn-delete mcp-env-remove" title="Remove {{ key }}">x</button>
-          </div>
-          {% set hdr_idx.value = hdr_idx.value + 1 %}
-          {% endfor %}
-        </div>
-        <div class="mcp-env-row mcp-env-new">
-          <input type="text" name="hdr_new_key" placeholder="Header name" class="mcp-env-key">
-          <input type="text" name="hdr_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">
-          <button type="submit" class="btn-create mcp-env-add">+ Add</button>
-        </div>
-      </form>
-    </div>
-    {% endif %}
+    {% endfor %}
   </div>
 
-  {% if mcp_status.tools_count > 0 %}
-  <div class="admin-card">
-    <h3 style="margin-bottom:8px;">MCP Tools ({{ mcp_status.tools_count }})</h3>
-    <div class="mcp-tools-list">
-      {% for tool in mcp_status.tools %}
-      <div class="mcp-tool-item">
-        <div class="mcp-tool-name">{{ tool.name }}</div>
-        <div class="mcp-tool-desc">{{ tool.description }}</div>
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
-
-  {% if mcp_status.resources_count > 0 %}
-  <div class="admin-card">
-    <h3 style="margin-bottom:8px;">MCP Resources ({{ mcp_status.resources_count }})</h3>
-    <div class="mcp-resources-list">
-      {% for res in mcp_status.resources %}
-      <div class="mcp-resource-item">
-        <div class="mcp-resource-name">{{ res.name }}</div>
-        <code class="mcp-resource-uri">{{ res.uri }}</code>
-      </div>
-      {% endfor %}
-    </div>
-  </div>
+  {% if not mcp_servers %}
+    <p class="empty-state">No MCP servers configured. Add one above.</p>
   {% endif %}
 
   <h2>Users</h2>
@@ -198,128 +217,341 @@
 {% block scripts %}
 <script>
 (function() {
-  function getById(id) { return document.getElementById(id); }
+  function getServerId(el) {
+    var card = el.closest(".mcp-server-card");
+    return card ? card.getAttribute("data-server-id") : null;
+  }
 
   function pollMcpStatus() {
-    fetch("/api/admin/mcp/status")
+    fetch("/api/admin/mcp/servers")
       .then(function(r) { return r.json(); })
       .then(function(status) {
-        var dot = document.querySelector(".mcp-status-dot");
-        if (dot) {
-          dot.className = "mcp-status-dot " + (status.connected ? "connected" : "disconnected");
-        }
-        var statusLabel = document.querySelector(".mcp-card .card-header h3 span:last-child");
-        if (statusLabel) {
-          statusLabel.textContent = status.connected ? "Connected" : "Disconnected";
-        }
-        var statsSpans = document.querySelectorAll(".mcp-stats span");
-        if (statsSpans.length >= 3) {
-          statsSpans[0].innerHTML = "Tools: <strong>" + status.tools_count + "</strong>";
-          statsSpans[1].innerHTML = "Resources: <strong>" + status.resources_count + "</strong>";
-          statsSpans[2].innerHTML = "Templates: <strong>" + status.templates_count + "</strong>";
-        }
-        var errDiv = document.querySelector(".mcp-error");
-        if (status.last_error) {
-          if (errDiv) {
-            errDiv.textContent = status.last_error;
-          } else {
-            var info = document.querySelector(".mcp-info");
-            if (info) {
-              var d = document.createElement("div");
-              d.className = "mcp-error";
-              d.textContent = status.last_error;
-              info.appendChild(d);
-            }
-          }
-        } else if (errDiv) {
-          errDiv.remove();
-        }
-        var toolsList = document.querySelector(".mcp-tools-list");
-        if (toolsList && status.tools) {
-          toolsList.innerHTML = status.tools.map(function(t) {
-            return '<div class="mcp-tool-item"><div class="mcp-tool-name">'
-              + t.name + '</div><div class="mcp-tool-desc">'
-              + (t.description || "") + '</div></div>';
-          }).join("");
-        }
-        var resList = document.querySelector(".mcp-resources-list");
-        if (resList && status.resources) {
-          resList.innerHTML = status.resources.map(function(r) {
-            return '<div class="mcp-resource-item"><div class="mcp-resource-name">'
-              + r.name + '</div><code class="mcp-resource-uri">'
-              + r.uri + '</code></div>';
-          }).join("");
-        }
-        var disconnectBtn = document.querySelector(".mcp-actions form[action='/admin/mcp/disconnect'] button");
-        var refreshBtn = document.querySelector(".mcp-actions form[action='/admin/mcp/refresh'] button");
-        if (disconnectBtn) disconnectBtn.disabled = !status.connected;
-        if (refreshBtn) refreshBtn.disabled = !status.connected;
+        var servers = status.servers || {};
+        Object.keys(servers).forEach(function(sid) {
+          var srv = servers[sid];
+          updateServerCard(sid, srv);
+        });
       })
       .catch(function() {});
   }
 
+  function updateServerCard(sid, srv) {
+    var card = document.querySelector('.mcp-server-card[data-server-id="' + sid + '"]');
+    if (!card) {
+      card = createServerCard(sid, srv);
+      var container = document.getElementById("mcp-servers-container");
+      if (container) container.appendChild(card);
+    }
+
+    var dot = card.querySelector(".mcp-status-dot");
+    if (dot) dot.className = "mcp-status-dot " + (srv.connected ? "connected" : "disconnected");
+
+    var nameEl = card.querySelector(".mcp-server-name");
+    if (nameEl) nameEl.textContent = srv.name;
+
+    var statsSpans = card.querySelectorAll(".mcp-stats span");
+    if (statsSpans.length >= 3) {
+      statsSpans[0].innerHTML = "Tools: <strong>" + srv.tools_count + "</strong>";
+      statsSpans[1].innerHTML = "Resources: <strong>" + srv.resources_count + "</strong>";
+      statsSpans[2].innerHTML = "Templates: <strong>" + srv.templates_count + "</strong>";
+    }
+    if (statsSpans.length >= 4) {
+      statsSpans[3].textContent = srv.connected ? "Connected" : "Disconnected";
+    }
+
+    var errDiv = card.querySelector(".mcp-error");
+    if (srv.last_error) {
+      if (errDiv) {
+        errDiv.textContent = srv.last_error;
+        errDiv.style.display = "block";
+      } else {
+        var info = card.querySelector(".mcp-info");
+        if (info) {
+          var d = document.createElement("div");
+          d.className = "mcp-error";
+          d.textContent = srv.last_error;
+          info.appendChild(d);
+        }
+      }
+    } else if (errDiv) {
+      errDiv.style.display = "none";
+    }
+
+    var toolsSection = card.querySelector(".mcp-tools-section");
+    var toolsList = card.querySelector(".mcp-tools-list");
+    if (srv.tools_count > 0 && srv.tools) {
+      if (toolsList) {
+        toolsList.innerHTML = srv.tools.map(function(t) {
+          return '<div class="mcp-tool-item"><div class="mcp-tool-name">' + t.name
+            + '</div><div class="mcp-tool-desc">' + (t.description || "") + '</div></div>';
+        }).join("");
+      }
+      if (toolsSection) toolsSection.style.display = "";
+    } else {
+      if (toolsList) toolsList.innerHTML = "";
+      if (toolsSection && !srv.tools_count) toolsSection.style.display = "none";
+    }
+
+    var resSection = card.querySelector(".mcp-resources-section");
+    var resList = card.querySelector(".mcp-resources-list");
+    if (srv.resources_count > 0 && srv.resources) {
+      if (resList) {
+        resList.innerHTML = srv.resources.map(function(r) {
+          return '<div class="mcp-resource-item"><div class="mcp-resource-name">' + r.name
+            + '</div><code class="mcp-resource-uri">' + r.uri + '</code></div>';
+        }).join("");
+      }
+      if (resSection) resSection.style.display = "";
+    } else {
+      if (resList) resList.innerHTML = "";
+      if (resSection) resSection.style.display = "none";
+    }
+
+    var disconnectBtn = card.querySelector('.mcp-actions button[data-action="disconnect"]');
+    var refreshBtn = card.querySelector('.mcp-actions button[data-action="refresh"]');
+    if (disconnectBtn) disconnectBtn.disabled = !srv.connected;
+    if (refreshBtn) refreshBtn.disabled = !srv.connected;
+
+    var toggle = card.querySelector(".mcp-toggle");
+    if (toggle) {
+      toggle.checked = srv.enabled;
+      var label = toggle.nextElementSibling;
+      if (label) label.textContent = srv.enabled ? "Enabled" : "Disabled";
+    }
+  }
+
+  function createServerCard(sid, srv) {
+    var div = document.createElement("div");
+    div.className = "admin-card mcp-server-card";
+    div.setAttribute("data-server-id", sid);
+    div.innerHTML =
+      '<div class="card-header">' +
+        '<h3>' +
+          '<span class="mcp-status-dot ' + (srv.connected ? 'connected' : 'disconnected') + '"></span>' +
+          '<span class="mcp-server-name">' + (srv.name || sid) + '</span>' +
+        '</h3>' +
+        '<div class="admin-actions" style="align-items:center;gap:8px;">' +
+          '<label class="mcp-toggle-label">' +
+            '<input type="checkbox" class="mcp-toggle" data-action="toggle"' + (srv.enabled ? ' checked' : '') + '>' +
+            '<span class="mcp-toggle-text">' + (srv.enabled ? 'Enabled' : 'Disabled') + '</span>' +
+          '</label>' +
+          '<button class="btn-delete" data-action="delete" title="Delete server">Delete</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="mcp-info">' +
+        '<div class="mcp-info-row">' +
+          '<span class="mcp-info-label">URL:</span> <code>' + (srv.server_url || "") + '</code>' +
+          '<span class="mcp-info-label" style="margin-left:16px;">Transport:</span> <code>' + (srv.transport || "") + '</code>' +
+        '</div>' +
+        '<div class="mcp-stats">' +
+          '<span>Tools: <strong>' + srv.tools_count + '</strong></span>' +
+          '<span>Resources: <strong>' + srv.resources_count + '</strong></span>' +
+          '<span>Templates: <strong>' + srv.templates_count + '</strong></span>' +
+          '<span style="margin-left:auto;color:var(--text-secondary);font-size:12px;">' + (srv.connected ? 'Connected' : 'Disconnected') + '</span>' +
+        '</div>' +
+        '<div class="mcp-error" style="display:' + (srv.last_error ? 'block' : 'none') + ';">' + (srv.last_error || "") + '</div>' +
+      '</div>' +
+      '<form class="admin-form mcp-server-config-form" data-action="update">' +
+        '<input type="text" name="server_url" value="' + (srv.server_url || "") + '" style="flex:2;" placeholder="' + (srv.transport === 'stdio' ? 'npx -y @modelcontextprotocol/server-filesystem /tmp' : 'MCP server URL') + '">' +
+        '<select name="transport" style="flex:0 0 170px;">' +
+          '<option value="streamable_http"' + (srv.transport === 'streamable_http' ? ' selected' : '') + '>streamable_http</option>' +
+          '<option value="sse"' + (srv.transport === 'sse' ? ' selected' : '') + '>sse</option>' +
+          '<option value="stdio"' + (srv.transport === 'stdio' ? ' selected' : '') + '>stdio</option>' +
+        '</select>' +
+        '<button type="submit" class="btn-create">Connect</button>' +
+      '</form>' +
+      '<div class="admin-actions mcp-actions">' +
+        '<button data-action="disconnect"' + (srv.connected ? '' : ' disabled') + '>Disconnect</button>' +
+        '<button data-action="refresh"' + (srv.connected ? '' : ' disabled') + '>Refresh Tools</button>' +
+      '</div>' +
+      '<div class="mcp-env-section" style="display:' + (srv.transport === 'stdio' ? '' : 'none') + ';">' +
+        '<h4>Environment Variables</h4>' +
+        '<form class="mcp-env-form" data-action="env">' +
+          '<div class="mcp-env-list"></div>' +
+          '<div class="mcp-env-row mcp-env-new">' +
+            '<input type="text" name="env_new_key" placeholder="KEY" class="mcp-env-key">' +
+            '<input type="text" name="env_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">' +
+            '<button type="submit" class="btn-create mcp-env-add">+ Add</button>' +
+          '</div>' +
+        '</form>' +
+      '</div>' +
+      '<div class="mcp-env-section" style="display:' + (srv.transport === 'stdio' ? 'none' : '') + ';">' +
+        '<h4>Custom Headers</h4>' +
+        '<form class="mcp-env-form" data-action="headers">' +
+          '<div class="mcp-env-list"></div>' +
+          '<div class="mcp-env-row mcp-env-new">' +
+            '<input type="text" name="hdr_new_key" placeholder="Header name" class="mcp-env-key">' +
+            '<input type="text" name="hdr_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">' +
+            '<button type="submit" class="btn-create mcp-env-add">+ Add</button>' +
+          '</div>' +
+        '</form>' +
+      '</div>' +
+      '<div class="mcp-tools-section" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border-color);">' +
+        '<h4>Tools (<span class="mcp-tools-count">0</span>)</h4>' +
+        '<div class="mcp-tools-list"></div>' +
+      '</div>' +
+      '<div class="mcp-resources-section" style="display:none;margin-top:12px;padding-top:12px;border-top:1px solid var(--border-color);">' +
+        '<h4>Resources (<span class="mcp-resources-count">0</span>)</h4>' +
+        '<div class="mcp-resources-list"></div>' +
+      '</div>';
+    return div;
+  }
+
+  function apiPost(url, bodyObj) {
+    var fd = new FormData();
+    Object.keys(bodyObj).forEach(function(k) {
+      if (bodyObj[k] !== undefined && bodyObj[k] !== null) {
+        fd.append(k, bodyObj[k]);
+      }
+    });
+    return fetch(url, { method: "POST", body: fd });
+  }
+
+  function rapidPoll(maxAttempts, delayMs) {
+    var attempts = 0;
+    function poll() {
+      attempts++;
+      fetch("/api/admin/mcp/servers")
+        .then(function(r) { return r.json(); })
+        .then(function(status) {
+          var servers = status.servers || {};
+          Object.keys(servers).forEach(function(sid) {
+            updateServerCard(sid, servers[sid]);
+          });
+        })
+        .finally(function() {
+          if (attempts < maxAttempts) setTimeout(poll, delayMs);
+        });
+    }
+    poll();
+  }
+
   setInterval(pollMcpStatus, 2000);
 
-  var connectForm = document.querySelector(".mcp-config-form");
-  if (connectForm) {
-    connectForm.addEventListener("submit", function(e) {
-      e.preventDefault();
-      var formData = new FormData(connectForm);
-      fetch(connectForm.action, { method: "POST", body: formData })
-        .then(function() {
-          var attempts = 0;
-          function rapidPoll() {
-            attempts++;
-            fetch("/api/admin/mcp/status")
-              .then(function(r) { return r.json(); })
-              .then(function(s) {
-                pollMcpStatus();
-                if (!s.connected && attempts < 15) {
-                  setTimeout(rapidPoll, 1000);
-                } else {
-                  pollMcpStatus();
-                }
-              })
-              .catch(function() {
-                if (attempts < 15) setTimeout(rapidPoll, 1000);
-              });
-          }
-          rapidPoll();
-        });
-    });
-  }
+  document.addEventListener("click", function(e) {
+    var btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    var action = btn.getAttribute("data-action");
+    var sid = getServerId(btn);
+    if (!sid) return;
 
-  var mcpActions = document.querySelector(".mcp-actions");
-  if (mcpActions) {
-    mcpActions.querySelectorAll("form").forEach(function(f) {
-      f.addEventListener("submit", function(e) {
-        e.preventDefault();
-        var fd = new FormData(f);
-        fetch(f.action, { method: "POST", body: fd })
-          .then(function() {
-            var attempts = 0;
-            function rapidPoll() {
-              attempts++;
-              fetch("/api/admin/mcp/status")
-                .then(function(r) { return r.json(); })
-                .then(function(s) {
-                  pollMcpStatus();
-                  var stable = f.action.indexOf("disconnect") >= 0 ? !s.connected : s.connected;
-                  if (!stable && attempts < 10) {
-                    setTimeout(rapidPoll, 800);
-                  } else {
-                    pollMcpStatus();
-                  }
-                })
-                .catch(function() {
-                  if (attempts < 10) setTimeout(rapidPoll, 800);
-                });
-            }
-            rapidPoll();
-          });
+    e.preventDefault();
+
+    if (action === "delete") {
+      if (!confirm("Delete this MCP server?")) return;
+      apiPost("/api/admin/mcp/server/delete", { server_id: sid }).then(function() {
+        var card = btn.closest(".mcp-server-card");
+        if (card) card.remove();
       });
-    });
-  }
+      return;
+    }
+
+    if (action === "disconnect") {
+      apiPost("/api/admin/mcp/server/disconnect", { server_id: sid })
+        .then(function() { rapidPoll(10, 800); });
+      return;
+    }
+
+    if (action === "refresh") {
+      apiPost("/api/admin/mcp/server/refresh", { server_id: sid })
+        .then(function() { rapidPoll(10, 800); });
+      return;
+    }
+
+    if (action === "toggle") {
+      var checked = btn.checked;
+      apiPost("/api/admin/mcp/server/toggle", { server_id: sid, enabled: checked }).then(function() {
+        rapidPoll(10, 800);
+      });
+      return;
+    }
+  });
+
+  document.addEventListener("submit", function(e) {
+    var form = e.target;
+
+    if (form.id === "mcp-add-form") {
+      e.preventDefault();
+      var fd = new FormData(form);
+      var body = { name: fd.get("name"), server_url: fd.get("server_url"), transport: fd.get("transport"), enabled: true };
+      apiPost("/api/admin/mcp/server/add", body).then(function(r) { return r.json(); })
+        .then(function() { rapidPoll(15, 1000); });
+      return;
+    }
+
+    var dataAction = form.getAttribute("data-action");
+    if (!dataAction) return;
+
+    var sid = getServerId(form);
+    if (!sid) return;
+
+    if (dataAction === "update") {
+      e.preventDefault();
+      var fd = new FormData(form);
+      apiPost("/api/admin/mcp/server/update", {
+        server_id: sid,
+        name: fd.get("name"),
+        server_url: fd.get("server_url"),
+        transport: fd.get("transport"),
+      }).then(function() { rapidPoll(15, 1000); });
+      return;
+    }
+
+    if (dataAction === "env") {
+      e.preventDefault();
+      var fd = new FormData(form);
+      var body = { server_id: sid };
+      var envItems = [];
+      var i = 0;
+      while (true) {
+        var key = form.querySelector('[name="env_key_' + i + '"]');
+        var val = form.querySelector('[name="env_val_' + i + '"]');
+        if (!key || !val) break;
+        body["env_key_" + i] = key.value;
+        body["env_val_" + i] = val.value;
+        i++;
+      }
+      var newKey = form.querySelector('[name="env_new_key"]');
+      var newVal = form.querySelector('[name="env_new_val"]');
+      if (newKey && newKey.value.trim()) {
+        body["env_new_key"] = newKey.value.trim();
+        body["env_new_val"] = newVal ? newVal.value.trim() : "";
+      }
+      var removeBtn = e.submitter;
+      if (removeBtn && removeBtn.name === "env_remove") {
+        body["env_remove"] = removeBtn.value;
+      }
+      apiPost("/api/admin/mcp/server/env", body).then(function() { pollMcpStatus(); });
+      return;
+    }
+
+    if (dataAction === "headers") {
+      e.preventDefault();
+      var fd = new FormData(form);
+      var body = { server_id: sid };
+      var i = 0;
+      while (true) {
+        var key = form.querySelector('[name="hdr_key_' + i + '"]');
+        var val = form.querySelector('[name="hdr_val_' + i + '"]');
+        if (!key || !val) break;
+        body["hdr_key_" + i] = key.value;
+        body["hdr_val_" + i] = val.value;
+        i++;
+      }
+      var newKey = form.querySelector('[name="hdr_new_key"]');
+      var newVal = form.querySelector('[name="hdr_new_val"]');
+      if (newKey && newKey.value.trim()) {
+        body["hdr_new_key"] = newKey.value.trim();
+        body["hdr_new_val"] = newVal ? newVal.value.trim() : "";
+      }
+      var removeBtn = e.submitter;
+      if (removeBtn && removeBtn.name === "hdr_remove") {
+        body["hdr_remove"] = removeBtn.value;
+      }
+      apiPost("/api/admin/mcp/server/headers", body).then(function() { pollMcpStatus(); });
+      return;
+    }
+  });
 })();
 </script>
 {% endblock %}

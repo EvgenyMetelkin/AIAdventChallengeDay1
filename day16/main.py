@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from user import User, UserManager
 from agent import Agent
-from mcp_client import MCPClientManager
+from mcp_client import MCPClientManager, MCPMultiServerManager
 
 API_KEY = os.getenv("OPENAI_API_KEY", "")
 BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
@@ -34,67 +34,67 @@ user_manager = UserManager(users_dir=USERS_DIR)
 agent = Agent(api_key=API_KEY, base_url=BASE_URL, verbose=VERBOSE)
 
 
-def _load_mcp_config() -> tuple[str, str, dict, dict]:
+def _load_mcp_config() -> list[dict]:
     if os.path.exists(MCP_CONFIG_FILE):
         try:
             with open(MCP_CONFIG_FILE, encoding="utf-8") as f:
                 cfg = json.load(f)
+            if "servers" in cfg:
+                return cfg["servers"]
             url = cfg.get("server_url", MCP_SERVER_URL)
-            transport = cfg.get("transport", MCP_TRANSPORT)
-            env = cfg.get("env", {})
-            headers = cfg.get("headers", {})
-            return url, transport, env, headers
+            if url:
+                return [{
+                    "id": MCPMultiServerManager.generate_id(),
+                    "name": "Default",
+                    "server_url": url,
+                    "transport": cfg.get("transport", MCP_TRANSPORT),
+                    "env": cfg.get("env", {}),
+                    "headers": cfg.get("headers", {}),
+                    "enabled": True,
+                }]
         except Exception:
             pass
-    return MCP_SERVER_URL, MCP_TRANSPORT, {}, {}
+    if MCP_SERVER_URL:
+        return [{
+            "id": MCPMultiServerManager.generate_id(),
+            "name": "Default",
+            "server_url": MCP_SERVER_URL,
+            "transport": MCP_TRANSPORT,
+            "env": {},
+            "headers": {},
+            "enabled": True,
+        }]
+    return []
 
 
-def _save_mcp_config(url: str, transport: str, env: Optional[dict] = None,
-                     headers: Optional[dict] = None):
-    existing = {}
-    if os.path.exists(MCP_CONFIG_FILE):
-        try:
-            with open(MCP_CONFIG_FILE, encoding="utf-8") as f:
-                existing = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            pass
-    existing["server_url"] = url
-    existing["transport"] = transport
-    if env is not None:
-        existing["env"] = dict(env)
-    if headers is not None:
-        existing["headers"] = dict(headers)
+def _save_mcp_config(server_configs: list[dict]):
     with open(MCP_CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(existing, f, indent=2, ensure_ascii=False)
+        json.dump({"servers": server_configs}, f, indent=2, ensure_ascii=False)
 
 
-_mcp_url, _mcp_transport, _mcp_env, _mcp_headers = _load_mcp_config()
-mcp_client = MCPClientManager(
-    server_url=_mcp_url,
-    transport=_mcp_transport,
-    verbose=VERBOSE,
-    env=_mcp_env,
-    headers=_mcp_headers,
-)
+mcp_server_manager = MCPMultiServerManager(verbose=VERBOSE)
 
-
-_mcp_bg_task = None
+_server_configs = _load_mcp_config()
+for cfg in _server_configs:
+    sid = cfg["id"]
+    mcp_server_manager.server_configs[sid] = cfg
+    mcp_server_manager.servers[sid] = MCPClientManager(
+        server_url=cfg.get("server_url", ""),
+        transport=cfg.get("transport", "streamable_http"),
+        verbose=VERBOSE,
+        env=cfg.get("env"),
+        headers=cfg.get("headers"),
+    )
 
 
 @app.on_event("startup")
 async def startup():
-    if _mcp_url:
-        global _mcp_bg_task
-        _mcp_bg_task = asyncio.create_task(_mcp_connect_bg(_mcp_url))
-
-
-async def _mcp_connect_bg(url: str):
-    await mcp_client.connect()
-    if mcp_client.connected:
-        print(f"[STARTUP] MCP connected to {url} "
-              f"({len(mcp_client.get_cached_tools())} tools)")
-    else:
-        print(f"[STARTUP] MCP connection failed, continuing without tools")
+    if _server_configs:
+        await mcp_server_manager.connect_all()
+        status = mcp_server_manager.get_status()
+        connected_count = sum(1 for s in status["servers"].values() if s["connected"])
+        total_count = len(status["servers"])
+        print(f"[STARTUP] MCP: {connected_count}/{total_count} servers connected")
 
 
 def init_demo():
@@ -182,16 +182,13 @@ async def chat_stream(request: Request, message: str = Form(...)):
     agent.temperature = user.get_default_temperature()
     agent.max_tokens = user.get_default_max_tokens()
 
-    mcp_available = mcp_client.connected or (MCP_SERVER_URL and await mcp_client.ensure_connected())
-    tools = mcp_client.tools_to_openai_format() if mcp_available else []
+    tools = mcp_server_manager.get_all_tools()
 
     async def generate():
         try:
             if tools:
                 async def call_tool_wrapper(name: str, arguments: dict) -> dict:
-                    if not mcp_client.connected:
-                        await mcp_client.ensure_connected()
-                    return await mcp_client.call_tool(name, arguments)
+                    return await mcp_server_manager.call_tool(name, arguments)
 
                 events = await agent.chat_with_tools(message, tools, call_tool_wrapper)
                 for evt in events:
@@ -275,12 +272,14 @@ async def admin(request: Request):
                 "user_id": user_obj.user_id,
                 "name": user_obj.name,
                 "agents": {k: {"name": v["name"],
-                               "history_length": len(v.get("history", []))}
+                                "history_length": len(v.get("history", []))}
                            for k, v in user_obj.agents.items()},
             })
-    mcp_status = mcp_client.get_status()
+    mcp_full_status = mcp_server_manager.get_status()
     return templates.TemplateResponse("admin.html", {
-        "request": request, "users": users_data, "mcp_status": mcp_status,
+        "request": request, "users": users_data,
+        "mcp_servers": mcp_full_status["servers"],
+        "mcp_any_connected": mcp_full_status["any_connected"],
     })
 
 
@@ -324,67 +323,108 @@ async def admin_reset_agent(request: Request, user_id: str = Form(...), agent_id
     return RedirectResponse("/admin", status_code=302)
 
 
-@app.post("/admin/mcp/connect")
-async def admin_mcp_connect(request: Request, server_url: str = Form(...),
-                            transport: str = Form("streamable_http")):
-    global _mcp_bg_task
-    _save_mcp_config(server_url, transport, env=mcp_client.env, headers=mcp_client.headers)
-    if transport == "stdio":
-        mcp_client.server_url = server_url
-    else:
-        mcp_client.server_url = server_url.rstrip("/")
-    mcp_client.transport = transport or "streamable_http"
-    if _mcp_bg_task and not _mcp_bg_task.done():
-        _mcp_bg_task.cancel()
-    _mcp_bg_task = asyncio.create_task(_mcp_reconnect_bg())
-    return RedirectResponse("/admin", status_code=302)
+@app.get("/api/admin/mcp/servers")
+async def admin_mcp_servers_status(request: Request):
+    status = mcp_server_manager.get_status()
+    return JSONResponse(status)
 
 
-async def _mcp_reconnect_bg():
-    try:
-        await mcp_client.reconfigure(mcp_client.server_url, mcp_client.transport)
-    except Exception:
-        pass
-
-
-@app.post("/admin/mcp/disconnect")
-async def admin_mcp_disconnect(request: Request):
-    global _mcp_bg_task
-    if _mcp_bg_task and not _mcp_bg_task.done():
-        _mcp_bg_task.cancel()
-        _mcp_bg_task = None
-    await mcp_client.disconnect()
-    mcp_client.server_url = ""
-    _save_mcp_config("", mcp_client.transport, env=mcp_client.env, headers=mcp_client.headers)
-    return RedirectResponse("/admin", status_code=302)
-
-
-@app.get("/api/admin/mcp/status")
-async def admin_mcp_status(request: Request):
-    status = mcp_client.get_status()
-    return JSONResponse({
-        "connected": status["connected"],
-        "server_url": status.get("server_url", ""),
-        "transport": status.get("transport", ""),
-        "tools_count": status["tools_count"],
-        "resources_count": status["resources_count"],
-        "templates_count": status["templates_count"],
-        "tools": status.get("tools", []),
-        "resources": status.get("resources", []),
-        "last_error": status.get("last_error", ""),
-    })
-
-
-@app.post("/admin/mcp/refresh")
-async def admin_mcp_refresh(request: Request):
-    if mcp_client.connected:
-        await mcp_client.refresh_tools()
-    return RedirectResponse("/admin", status_code=302)
-
-
-@app.post("/admin/mcp/env")
-async def admin_mcp_env(request: Request):
+@app.post("/api/admin/mcp/server/add")
+async def admin_mcp_server_add(request: Request):
     form = await request.form()
+    name = form.get("name", "Server").strip()
+    server_url = form.get("server_url", "").strip()
+    transport = form.get("transport", "streamable_http").strip()
+    enabled = form.get("enabled", "true").strip().lower() == "true"
+    if not server_url:
+        return JSONResponse({"error": "server_url required"}, status_code=400)
+    sid = await mcp_server_manager.add_server(
+        name=name, server_url=server_url, transport=transport, enabled=enabled,
+    )
+    _save_mcp_config(mcp_server_manager.get_server_configs())
+    return JSONResponse({"status": "ok", "server_id": sid})
+
+
+@app.post("/api/admin/mcp/server/delete")
+async def admin_mcp_server_delete(request: Request):
+    form = await request.form()
+    server_id = form.get("server_id", "").strip()
+    if not server_id:
+        return JSONResponse({"error": "server_id required"}, status_code=400)
+    await mcp_server_manager.remove_server(server_id)
+    _save_mcp_config(mcp_server_manager.get_server_configs())
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/api/admin/mcp/server/connect")
+async def admin_mcp_server_connect(request: Request):
+    form = await request.form()
+    server_id = form.get("server_id", "").strip()
+    if not server_id:
+        return JSONResponse({"error": "server_id required"}, status_code=400)
+    ok = await mcp_server_manager.connect_server(server_id)
+    _save_mcp_config(mcp_server_manager.get_server_configs())
+    return JSONResponse({"status": "ok", "connected": ok})
+
+
+@app.post("/api/admin/mcp/server/disconnect")
+async def admin_mcp_server_disconnect(request: Request):
+    form = await request.form()
+    server_id = form.get("server_id", "").strip()
+    if not server_id:
+        return JSONResponse({"error": "server_id required"}, status_code=400)
+    await mcp_server_manager.disconnect_server(server_id)
+    _save_mcp_config(mcp_server_manager.get_server_configs())
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/api/admin/mcp/server/toggle")
+async def admin_mcp_server_toggle(request: Request):
+    form = await request.form()
+    server_id = form.get("server_id", "").strip()
+    enabled = form.get("enabled", "true").strip().lower() == "true"
+    if not server_id:
+        return JSONResponse({"error": "server_id required"}, status_code=400)
+    await mcp_server_manager.toggle_server(server_id, enabled=enabled)
+    _save_mcp_config(mcp_server_manager.get_server_configs())
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/api/admin/mcp/server/refresh")
+async def admin_mcp_server_refresh(request: Request):
+    form = await request.form()
+    server_id = form.get("server_id", "").strip()
+    if not server_id:
+        return JSONResponse({"error": "server_id required"}, status_code=400)
+    await mcp_server_manager.refresh_server_tools(server_id)
+    return JSONResponse({"status": "ok"})
+
+
+@app.post("/api/admin/mcp/server/update")
+async def admin_mcp_server_update(request: Request):
+    form = await request.form()
+    server_id = form.get("server_id", "").strip()
+    if not server_id:
+        return JSONResponse({"error": "server_id required"}, status_code=400)
+    name = form.get("name")
+    server_url = form.get("server_url")
+    transport = form.get("transport")
+    enabled_raw = form.get("enabled")
+    enabled = None if enabled_raw is None else enabled_raw.strip().lower() == "true"
+    ok = await mcp_server_manager.reconfigure_server(
+        server_id, name=name, server_url=server_url,
+        transport=transport, enabled=enabled,
+    )
+    _save_mcp_config(mcp_server_manager.get_server_configs())
+    return JSONResponse({"status": "ok", "connected": ok})
+
+
+@app.post("/api/admin/mcp/server/env")
+async def admin_mcp_server_env(request: Request):
+    form = await request.form()
+    server_id = form.get("server_id", "").strip()
+    if not server_id:
+        return JSONResponse({"error": "server_id required"}, status_code=400)
     new_env: dict = {}
     i = 0
     while True:
@@ -394,25 +434,24 @@ async def admin_mcp_env(request: Request):
             break
         new_env[key] = val
         i += 1
-
     new_key = form.get("env_new_key", "").strip()
     new_val = form.get("env_new_val", "").strip()
     if new_key:
         new_env[new_key] = new_val
-
     remove_key = form.get("env_remove", "").strip()
     if remove_key and remove_key in new_env:
         del new_env[remove_key]
-
-    mcp_client.env = new_env
-    _save_mcp_config(mcp_client.server_url, mcp_client.transport,
-                     env=new_env, headers=mcp_client.headers)
-    return RedirectResponse("/admin", status_code=302)
+    await mcp_server_manager.update_server_env(server_id, new_env)
+    _save_mcp_config(mcp_server_manager.get_server_configs())
+    return JSONResponse({"status": "ok"})
 
 
-@app.post("/admin/mcp/headers")
-async def admin_mcp_headers(request: Request):
+@app.post("/api/admin/mcp/server/headers")
+async def admin_mcp_server_headers(request: Request):
     form = await request.form()
+    server_id = form.get("server_id", "").strip()
+    if not server_id:
+        return JSONResponse({"error": "server_id required"}, status_code=400)
     new_headers: dict = {}
     i = 0
     while True:
@@ -422,23 +461,14 @@ async def admin_mcp_headers(request: Request):
             break
         new_headers[key] = val
         i += 1
-
     new_key = form.get("hdr_new_key", "").strip()
     new_val = form.get("hdr_new_val", "").strip()
     if new_key:
         new_headers[new_key] = new_val
-
     remove_key = form.get("hdr_remove", "").strip()
     if remove_key and remove_key in new_headers:
         del new_headers[remove_key]
-
-    mcp_client.headers = new_headers
-    if mcp_client.connected and mcp_client.transport != "stdio":
-        global _mcp_bg_task
-        if _mcp_bg_task and not _mcp_bg_task.done():
-            _mcp_bg_task.cancel()
-        _mcp_bg_task = asyncio.create_task(_mcp_reconnect_bg())
-
-    _save_mcp_config(mcp_client.server_url, mcp_client.transport,
-                     env=mcp_client.env, headers=new_headers)
-    return RedirectResponse("/admin", status_code=302)
+    reconnect = form.get("reconnect", "").strip().lower() == "true"
+    await mcp_server_manager.update_server_headers(server_id, new_headers, reconnect=reconnect)
+    _save_mcp_config(mcp_server_manager.get_server_configs())
+    return JSONResponse({"status": "ok"})

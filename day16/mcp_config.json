@@ -1,8 +1,24 @@
 {
-  "server_url": "http://185.139.69.186",
-  "transport": "streamable_http",
-  "env": {},
-  "headers": {
-    "X-API-Key": "7258af81935ddccb375677addb33e5d23b51cde0eefc4f57"
-  }
+  "servers": [
+    {
+      "id": "93e5c7b1",
+      "name": "Default",
+      "server_url": "http://0.0.0.0:9001",
+      "transport": "streamable_http",
+      "env": {},
+      "headers": {
+        "X-API-Key": "7258af81935ddccb375677addb33e5d23b51cde0eefc4f57"
+      },
+      "enabled": true
+    },
+    {
+      "id": "725a2af1",
+      "name": "Scheduler",
+      "server_url": "http://0.0.0.0:9002",
+      "transport": "streamable_http",
+      "env": {},
+      "headers": {},
+      "enabled": true
+    }
+  ]
 }

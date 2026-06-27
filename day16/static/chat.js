@@ -131,7 +131,12 @@ document.addEventListener("DOMContentLoaded", () => {
                 return;
               }
               if (data.tool_call) {
-                toolsUsed.push(data.tool_call.name);
+                var displayName = data.tool_call.name;
+                var sepIdx = displayName.indexOf("__");
+                if (sepIdx >= 0) {
+                  displayName = displayName.substring(0, sepIdx) + " \u2192 " + displayName.substring(sepIdx + 2);
+                }
+                toolsUsed.push(displayName);
                 var cd = assistantMsgEl.querySelector(".message-content");
                 if (cd.classList.contains("loading")) {
                   cd.classList.remove("loading");

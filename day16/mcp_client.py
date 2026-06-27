@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import shlex
+import uuid
 from typing import Optional
 
 import httpx
@@ -524,3 +525,250 @@ class MCPClientManager:
             "templates": self.get_cached_resource_templates(),
             "last_error": self._last_error,
         }
+
+
+class MCPMultiServerManager:
+    TOOL_PREFIX_SEP = "__"
+
+    def __init__(self, verbose: bool = False):
+        self.servers: dict[str, MCPClientManager] = {}
+        self.server_configs: dict[str, dict] = {}
+        self.verbose = verbose
+        self._lock = asyncio.Lock()
+
+    @staticmethod
+    def generate_id() -> str:
+        return uuid.uuid4().hex[:8]
+
+    def _tool_prefixed_name(self, server_id: str, tool_name: str) -> str:
+        return f"{server_id}{self.TOOL_PREFIX_SEP}{tool_name}"
+
+    def _split_prefixed(self, prefixed_name: str) -> tuple[Optional[str], str]:
+        parts = prefixed_name.split(self.TOOL_PREFIX_SEP, 1)
+        if len(parts) == 2 and parts[0] in self.server_configs:
+            return parts[0], parts[1]
+        return None, prefixed_name
+
+    async def connect_all(self):
+        async with self._lock:
+            for sid, cfg in self.server_configs.items():
+                if not cfg.get("enabled", True):
+                    continue
+                client = self.servers.get(sid)
+                if client and client.connected:
+                    continue
+                if client is None:
+                    client = MCPClientManager(
+                        server_url=cfg.get("server_url", ""),
+                        transport=cfg.get("transport", "streamable_http"),
+                        verbose=self.verbose,
+                        env=cfg.get("env"),
+                        headers=cfg.get("headers"),
+                    )
+                    self.servers[sid] = client
+                try:
+                    await client.connect()
+                except Exception as e:
+                    if self.verbose:
+                        print(f"[MCP-MULTI] Server '{cfg.get('name', sid)}' connect failed: {e}")
+
+    async def disconnect_all(self):
+        async with self._lock:
+            for client in self.servers.values():
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+
+    async def add_server(self, name: str, server_url: str, transport: str = "streamable_http",
+                         env: Optional[dict] = None, headers: Optional[dict] = None,
+                         enabled: bool = True) -> str:
+        sid = self.generate_id()
+        cfg = {
+            "id": sid,
+            "name": name,
+            "server_url": server_url,
+            "transport": transport,
+            "env": dict(env) if env else {},
+            "headers": dict(headers) if headers else {},
+            "enabled": enabled,
+        }
+        async with self._lock:
+            self.server_configs[sid] = cfg
+            client = MCPClientManager(
+                server_url=server_url,
+                transport=transport,
+                verbose=self.verbose,
+                env=cfg.get("env"),
+                headers=cfg.get("headers"),
+            )
+            self.servers[sid] = client
+            if enabled:
+                try:
+                    await client.connect()
+                except Exception:
+                    pass
+        return sid
+
+    async def remove_server(self, server_id: str):
+        async with self._lock:
+            client = self.servers.pop(server_id, None)
+            if client:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            self.server_configs.pop(server_id, None)
+
+    async def connect_server(self, server_id: str) -> bool:
+        client = self.servers.get(server_id)
+        if not client:
+            cfg = self.server_configs.get(server_id)
+            if not cfg:
+                return False
+            client = MCPClientManager(
+                server_url=cfg.get("server_url", ""),
+                transport=cfg.get("transport", "streamable_http"),
+                verbose=self.verbose,
+                env=cfg.get("env"),
+                headers=cfg.get("headers"),
+            )
+            self.servers[server_id] = client
+        return await client.connect()
+
+    async def disconnect_server(self, server_id: str):
+        client = self.servers.get(server_id)
+        if client:
+            await client.disconnect()
+
+    async def toggle_server(self, server_id: str, enabled: bool):
+        cfg = self.server_configs.get(server_id)
+        if not cfg:
+            return
+        cfg["enabled"] = enabled
+        if enabled:
+            await self.connect_server(server_id)
+        else:
+            await self.disconnect_server(server_id)
+
+    async def refresh_server_tools(self, server_id: str):
+        client = self.servers.get(server_id)
+        if client and client.connected:
+            await client.refresh_tools()
+
+    async def reconfigure_server(self, server_id: str, name: str = None,
+                                  server_url: str = None, transport: str = None,
+                                  env: Optional[dict] = None, headers: Optional[dict] = None,
+                                  enabled: bool = None) -> bool:
+        cfg = self.server_configs.get(server_id)
+        if not cfg:
+            return False
+        if name is not None:
+            cfg["name"] = name
+        if server_url is not None:
+            cfg["server_url"] = server_url
+        if transport is not None:
+            cfg["transport"] = transport
+        if env is not None:
+            cfg["env"] = dict(env)
+        if headers is not None:
+            cfg["headers"] = dict(headers)
+        if enabled is not None:
+            cfg["enabled"] = enabled
+
+        client = self.servers.get(server_id)
+        if client:
+            await client.disconnect()
+        return await self.connect_server(server_id)
+
+    async def update_server_env(self, server_id: str, env: dict):
+        cfg = self.server_configs.get(server_id)
+        if not cfg:
+            return
+        cfg["env"] = dict(env)
+        client = self.servers.get(server_id)
+        if client:
+            client.env = dict(env)
+
+    async def update_server_headers(self, server_id: str, headers: dict, reconnect: bool = False):
+        cfg = self.server_configs.get(server_id)
+        if not cfg:
+            return
+        cfg["headers"] = dict(headers)
+        client = self.servers.get(server_id)
+        if client:
+            client.headers = dict(headers)
+            if reconnect and client.connected and client.transport != "stdio":
+                await self.reconfigure_server(
+                    server_id,
+                    server_url=cfg.get("server_url"),
+                    transport=cfg.get("transport"),
+                    headers=headers,
+                )
+
+    def get_all_tools(self) -> list[dict]:
+        all_tools = []
+        for sid, client in self.servers.items():
+            if not client.connected:
+                continue
+            tools = client.tools_to_openai_format()
+            for t in tools:
+                orig_name = t["function"]["name"]
+                prefixed = self._tool_prefixed_name(sid, orig_name)
+                t["function"]["name"] = prefixed
+                all_tools.append(t)
+        return all_tools
+
+    async def call_tool(self, prefixed_name: str, arguments: dict) -> dict:
+        sid, orig_name = self._split_prefixed(prefixed_name)
+        if sid is None:
+            return {"name": prefixed_name, "arguments": arguments,
+                    "error": f"Unknown tool: {prefixed_name}"}
+        client = self.servers.get(sid)
+        if not client or not client.connected:
+            return {"name": prefixed_name, "arguments": arguments,
+                    "error": f"Server '{sid}' not connected"}
+        result = await client.call_tool(orig_name, arguments)
+        result["name"] = prefixed_name
+        result["_server_id"] = sid
+        return result
+
+    def any_connected(self) -> bool:
+        return any(c.connected for c in self.servers.values())
+
+    def get_status(self) -> dict:
+        servers_status = {}
+        for sid, cfg in self.server_configs.items():
+            client = self.servers.get(sid)
+            if client:
+                s = client.get_status()
+            else:
+                s = {"connected": False, "server_url": cfg.get("server_url", ""),
+                     "transport": cfg.get("transport", ""), "env": cfg.get("env", {}),
+                     "headers": cfg.get("headers", {}), "tools_count": 0, "tools": [],
+                     "resources_count": 0, "resources": [], "templates_count": 0,
+                     "templates": [], "last_error": None}
+            servers_status[sid] = {
+                "id": sid,
+                "name": cfg.get("name", sid),
+                "enabled": cfg.get("enabled", True),
+                "connected": s["connected"],
+                "server_url": s["server_url"],
+                "transport": s["transport"],
+                "env": s["env"],
+                "headers": s["headers"],
+                "tools_count": s["tools_count"],
+                "tools": s["tools"],
+                "resources_count": s["resources_count"],
+                "resources": s["resources"],
+                "templates_count": s["templates_count"],
+                "templates": s["templates"],
+                "last_error": s["last_error"],
+            }
+        return {
+            "servers": servers_status,
+            "any_connected": self.any_connected(),
+        }
+
+    def get_server_configs(self) -> list[dict]:
+        return [dict(cfg) for cfg in self.server_configs.values()]
