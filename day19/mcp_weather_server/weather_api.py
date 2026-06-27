@@ -111,3 +111,105 @@ async def fetch_current_weather(lat: float, lon: float) -> Dict[str, Any]:
         "precipitation_probability": precip_pct,
         "description": description,
     }
+
+
+def _describe_daily(code: int, temp_min: float, temp_max: float, precip_pct: int) -> str:
+    """Формирует casual-описание дневной погоды на русском языке."""
+    desc = WEATHER_DESCRIPTIONS.get(code, "неизвестная погода")
+
+    precip = ""
+    if precip_pct >= 70:
+        precip = ", не забудь зонт!"
+    elif precip_pct >= 30:
+        precip = ", возможны осадки"
+    elif precip_pct <= 10:
+        precip = ", осадков не ожидается"
+    else:
+        precip = f", вероятность осадков {precip_pct}%"
+
+    if 71 <= code <= 77 or 85 <= code <= 86:
+        if precip_pct <= 10:
+            precip = ", снега не ожидается"
+        elif precip_pct < 50:
+            precip = ", возможен снег"
+        else:
+            precip = ", одевайся теплее!"
+
+    sign_min = "+" if temp_min >= 0 else ""
+    sign_max = "+" if temp_max >= 0 else ""
+    return f"{desc.capitalize()}, {sign_min}{temp_min}..{sign_max}{temp_max}°C{precip}."
+
+
+async def fetch_daily_forecast_16d(lat: float, lon: float) -> Dict[str, Any]:
+    """Запрашивает прогноз на 16 дней из Open-Meteo API и возвращает словарь."""
+    params: Dict[str, Any] = {
+        "latitude": lat,
+        "longitude": lon,
+        "daily": ",".join([
+            "temperature_2m_max",
+            "temperature_2m_min",
+            "precipitation_probability_max",
+            "weather_code",
+            "sunrise",
+            "sunset",
+        ]),
+        "forecast_days": 16,
+        "timezone": "auto",
+    }
+
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        resp = await client.get(OPEN_METEO_BASE, params=params)
+
+    if resp.status_code != 200:
+        try:
+            error_data = resp.json()
+            reason = error_data.get("reason", resp.text)
+        except Exception:
+            reason = resp.text
+        raise RuntimeError(f"Open-Meteo API error {resp.status_code}: {reason}")
+
+    data = resp.json()
+
+    daily = data.get("daily", {})
+    if not daily:
+        raise RuntimeError("Open-Meteo API вернул пустой ответ для daily")
+
+    time_list = daily.get("time", [])
+    temp_max_list = daily.get("temperature_2m_max", [])
+    temp_min_list = daily.get("temperature_2m_min", [])
+    precip_list = daily.get("precipitation_probability_max", [])
+    code_list = daily.get("weather_code", [])
+    sunrise_list = daily.get("sunrise", [])
+    sunset_list = daily.get("sunset", [])
+
+    if not time_list:
+        raise RuntimeError("Open-Meteo API не вернул временные метки daily")
+
+    forecast = []
+    for i, date_str in enumerate(time_list):
+        temp_max = float(temp_max_list[i]) if i < len(temp_max_list) and temp_max_list[i] is not None else 0.0
+        temp_min = float(temp_min_list[i]) if i < len(temp_min_list) and temp_min_list[i] is not None else 0.0
+        precip_pct = int(precip_list[i]) if i < len(precip_list) and precip_list[i] is not None else 0
+        weather_code = int(code_list[i]) if i < len(code_list) and code_list[i] is not None else 0
+        sunrise = sunrise_list[i] if i < len(sunrise_list) else None
+        sunset = sunset_list[i] if i < len(sunset_list) else None
+
+        description = _describe_daily(weather_code, temp_min, temp_max, precip_pct)
+
+        forecast.append({
+            "date": date_str,
+            "temperature_max": temp_max,
+            "temperature_min": temp_min,
+            "precipitation_probability": precip_pct,
+            "weather_code": weather_code,
+            "description": description,
+            "sunrise": sunrise,
+            "sunset": sunset,
+        })
+
+    return {
+        "latitude": data.get("latitude", lat),
+        "longitude": data.get("longitude", lon),
+        "timezone": data.get("timezone", ""),
+        "forecast": forecast,
+    }

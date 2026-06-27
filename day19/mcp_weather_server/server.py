@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from handlers import (
     handle_get_weather_by_coordinates,
     handle_get_weather_spb,
+    handle_get_forecast_spb_16d,
     TOOLS_SCHEMA,
 )
 
@@ -97,6 +98,15 @@ async def _handle_method(method: str, params: dict, request_id: Any) -> tuple[Op
             elif tool_name == "get_weather_spb":
                 logger.info("Calling get_weather_spb")
                 result = await handle_get_weather_spb()
+                text_content = json.dumps(result, ensure_ascii=False, indent=2)
+                return _jsonrpc_ok(request_id, {
+                    "content": [{"type": "text", "text": text_content}],
+                    "isError": False,
+                }), None
+
+            elif tool_name == "get_forecast_spb_16d":
+                logger.info("Calling get_forecast_spb_16d")
+                result = await handle_get_forecast_spb_16d()
                 text_content = json.dumps(result, ensure_ascii=False, indent=2)
                 return _jsonrpc_ok(request_id, {
                     "content": [{"type": "text", "text": text_content}],
