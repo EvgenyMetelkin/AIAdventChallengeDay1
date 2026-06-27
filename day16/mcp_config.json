@@ -1,23 +1,23 @@
 {
   "servers": [
     {
-      "id": "93e5c7b1",
-      "name": "Default",
+      "id": "6bd895a7",
+      "name": "Weather",
       "server_url": "http://0.0.0.0:9001",
       "transport": "streamable_http",
       "env": {},
-      "headers": {
-        "X-API-Key": "7258af81935ddccb375677addb33e5d23b51cde0eefc4f57"
-      },
+      "headers": {},
       "enabled": true
     },
     {
-      "id": "725a2af1",
-      "name": "Scheduler",
+      "id": "232148c0",
+      "name": "News",
       "server_url": "http://0.0.0.0:9002",
       "transport": "streamable_http",
       "env": {},
-      "headers": {},
+      "headers": {
+        "X-API-Key": "4484bc451cde45e5a9da2e992acc2a6a"
+      },
       "enabled": true
     }
   ]

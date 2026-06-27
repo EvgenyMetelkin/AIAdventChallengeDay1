@@ -9,14 +9,23 @@
 
   <h2>MCP Servers</h2>
 
-  <form class="admin-form mcp-add-form" id="mcp-add-form">
+  <form class="admin-form mcp-add-form" id="mcp-add-form" style="flex-wrap:wrap;">
     <input type="text" name="name" placeholder="Server name" required>
     <input type="text" name="server_url" placeholder="MCP server URL or stdio command" required style="flex:2;">
-    <select name="transport">
+    <select name="transport" id="add-server-transport">
       <option value="streamable_http">streamable_http</option>
       <option value="sse">sse</option>
       <option value="stdio">stdio</option>
     </select>
+    <div class="mcp-env-section" id="add-server-headers-section" style="flex-basis:100%;display:none;">
+      <h4>Custom Headers</h4>
+      <div class="mcp-env-list" id="add-server-headers-list"></div>
+      <div class="mcp-env-row mcp-env-new">
+        <input type="text" id="add-hdr-new-key" placeholder="Header name" class="mcp-env-key">
+        <input type="text" id="add-hdr-new-val" placeholder="value" class="mcp-env-val" autocomplete="off">
+        <button type="button" class="btn-create mcp-env-add mcp-env-add-btn" data-section="add-headers">+ Add</button>
+      </div>
+    </div>
     <button type="submit" class="btn-create">Add Server</button>
   </form>
 
@@ -90,7 +99,7 @@
           <div class="mcp-env-row mcp-env-new">
             <input type="text" name="env_new_key" placeholder="KEY" class="mcp-env-key">
             <input type="text" name="env_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">
-            <button type="submit" class="btn-create mcp-env-add">+ Add</button>
+            <button type="button" class="btn-create mcp-env-add mcp-env-add-btn" data-section="env">+ Add</button>
           </div>
         </form>
       </div>
@@ -114,7 +123,7 @@
           <div class="mcp-env-row mcp-env-new">
             <input type="text" name="hdr_new_key" placeholder="Header name" class="mcp-env-key">
             <input type="text" name="hdr_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">
-            <button type="submit" class="btn-create mcp-env-add">+ Add</button>
+            <button type="button" class="btn-create mcp-env-add mcp-env-add-btn" data-section="headers">+ Add</button>
           </div>
         </form>
       </div>
@@ -371,7 +380,7 @@
           '<div class="mcp-env-row mcp-env-new">' +
             '<input type="text" name="env_new_key" placeholder="KEY" class="mcp-env-key">' +
             '<input type="text" name="env_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">' +
-            '<button type="submit" class="btn-create mcp-env-add">+ Add</button>' +
+            '<button type="button" class="btn-create mcp-env-add mcp-env-add-btn" data-section="env">+ Add</button>' +
           '</div>' +
         '</form>' +
       '</div>' +
@@ -382,7 +391,7 @@
           '<div class="mcp-env-row mcp-env-new">' +
             '<input type="text" name="hdr_new_key" placeholder="Header name" class="mcp-env-key">' +
             '<input type="text" name="hdr_new_val" placeholder="value" class="mcp-env-val" autocomplete="off">' +
-            '<button type="submit" class="btn-create mcp-env-add">+ Add</button>' +
+            '<button type="button" class="btn-create mcp-env-add mcp-env-add-btn" data-section="headers">+ Add</button>' +
           '</div>' +
         '</form>' +
       '</div>' +
@@ -428,7 +437,94 @@
 
   setInterval(pollMcpStatus, 2000);
 
+  var addTransport = document.getElementById("add-server-transport");
+  if (addTransport) {
+    addTransport.addEventListener("change", function() {
+      var transport = this.value;
+      var section = document.getElementById("add-server-headers-section");
+      if (section) section.style.display = (transport === "streamable_http" || transport === "sse") ? "" : "none";
+    });
+  }
+
   document.addEventListener("click", function(e) {
+    var addBtn = e.target.closest(".mcp-env-add-btn");
+    if (addBtn) {
+      e.preventDefault();
+      var section = addBtn.getAttribute("data-section");
+      if (section === "add-headers") {
+        var keyInput = document.getElementById("add-hdr-new-key");
+        var valInput = document.getElementById("add-hdr-new-val");
+        var list = document.getElementById("add-server-headers-list");
+        if (!keyInput || !keyInput.value.trim()) return;
+        var idx = list.querySelectorAll(".mcp-env-row").length;
+        var row = document.createElement("div");
+        row.className = "mcp-env-row";
+        row.innerHTML =
+          '<input type="text" name="add_hdr_key_' + idx + '" value="' + keyInput.value.trim().replace(/"/g, '&quot;') + '" readonly class="mcp-env-key">' +
+          '<input type="password" name="add_hdr_val_' + idx + '" value="' + (valInput ? valInput.value.replace(/"/g, '&quot;') : '') + '" class="mcp-env-val" autocomplete="off">' +
+          '<button type="button" class="btn-delete mcp-env-remove add-hdr-remove-btn" title="Remove">x</button>';
+        list.appendChild(row);
+        keyInput.value = '';
+        if (valInput) valInput.value = '';
+        return;
+      }
+      var form = addBtn.closest("form");
+      var sid = getServerId(form);
+      if (!sid) return;
+      var newKeyInput, newValInput, keyPrefix, valPrefix, removeName, apiUrl;
+      if (section === "env") {
+        newKeyInput = form.querySelector('[name="env_new_key"]');
+        newValInput = form.querySelector('[name="env_new_val"]');
+        keyPrefix = "env_key_";
+        valPrefix = "env_val_";
+        removeName = "env_remove";
+        apiUrl = "/api/admin/mcp/server/env";
+      } else {
+        newKeyInput = form.querySelector('[name="hdr_new_key"]');
+        newValInput = form.querySelector('[name="hdr_new_val"]');
+        keyPrefix = "hdr_key_";
+        valPrefix = "hdr_val_";
+        removeName = "hdr_remove";
+        apiUrl = "/api/admin/mcp/server/headers";
+      }
+      var list = form.querySelector(".mcp-env-list");
+      if (!newKeyInput || !newKeyInput.value.trim() || !list) return;
+      var newKey = newKeyInput.value.trim();
+      var newVal = newValInput ? newValInput.value.trim() : '';
+      var existingRows = list.querySelectorAll(".mcp-env-row");
+      var nextIdx = existingRows.length;
+      var row = document.createElement("div");
+      row.className = "mcp-env-row";
+      row.innerHTML =
+        '<input type="text" name="' + keyPrefix + nextIdx + '" value="' + newKey.replace(/"/g, '&quot;') + '" readonly class="mcp-env-key">' +
+        '<input type="password" name="' + valPrefix + nextIdx + '" value="' + newVal.replace(/"/g, '&quot;') + '" class="mcp-env-val" autocomplete="off">' +
+        '<button type="submit" name="' + removeName + '" value="' + newKey.replace(/"/g, '&quot;') + '" class="btn-delete mcp-env-remove" title="Remove ' + newKey + '">x</button>';
+      list.appendChild(row);
+      newKeyInput.value = '';
+      if (newValInput) newValInput.value = '';
+      var body = { server_id: sid };
+      var i = 0;
+      list.querySelectorAll(".mcp-env-row").forEach(function(r) {
+        var k = r.querySelector(".mcp-env-key");
+        var v = r.querySelector(".mcp-env-val");
+        if (k && k.value.trim()) {
+          body[keyPrefix + i] = k.value;
+          body[valPrefix + i] = v ? v.value : '';
+          i++;
+        }
+      });
+      apiPost(apiUrl, body).then(function() { pollMcpStatus(); });
+      return;
+    }
+
+    var removeBtn = e.target.closest(".add-hdr-remove-btn");
+    if (removeBtn) {
+      e.preventDefault();
+      var row = removeBtn.closest(".mcp-env-row");
+      if (row) row.remove();
+      return;
+    }
+
     var btn = e.target.closest("[data-action]");
     if (!btn) return;
     var action = btn.getAttribute("data-action");
@@ -474,8 +570,22 @@
       e.preventDefault();
       var fd = new FormData(form);
       var body = { name: fd.get("name"), server_url: fd.get("server_url"), transport: fd.get("transport"), enabled: true };
+      var headersObj = {};
+      var headerList = document.getElementById("add-server-headers-list");
+      if (headerList) {
+        headerList.querySelectorAll(".mcp-env-row").forEach(function(r) {
+          var k = r.querySelector(".mcp-env-key");
+          var v = r.querySelector(".mcp-env-val");
+          if (k && k.value.trim()) headersObj[k.value.trim()] = v ? v.value : '';
+        });
+      }
+      if (Object.keys(headersObj).length > 0) body.headers_json = JSON.stringify(headersObj);
       apiPost("/api/admin/mcp/server/add", body).then(function(r) { return r.json(); })
-        .then(function() { rapidPoll(15, 1000); });
+        .then(function() {
+          var list = document.getElementById("add-server-headers-list");
+          if (list) list.innerHTML = "";
+          rapidPoll(15, 1000);
+        });
       return;
     }
 
@@ -499,9 +609,7 @@
 
     if (dataAction === "env") {
       e.preventDefault();
-      var fd = new FormData(form);
       var body = { server_id: sid };
-      var envItems = [];
       var i = 0;
       while (true) {
         var key = form.querySelector('[name="env_key_' + i + '"]');
@@ -511,15 +619,11 @@
         body["env_val_" + i] = val.value;
         i++;
       }
-      var newKey = form.querySelector('[name="env_new_key"]');
-      var newVal = form.querySelector('[name="env_new_val"]');
-      if (newKey && newKey.value.trim()) {
-        body["env_new_key"] = newKey.value.trim();
-        body["env_new_val"] = newVal ? newVal.value.trim() : "";
-      }
       var removeBtn = e.submitter;
       if (removeBtn && removeBtn.name === "env_remove") {
         body["env_remove"] = removeBtn.value;
+        var row = removeBtn.closest(".mcp-env-row");
+        if (row) row.remove();
       }
       apiPost("/api/admin/mcp/server/env", body).then(function() { pollMcpStatus(); });
       return;
@@ -527,7 +631,6 @@
 
     if (dataAction === "headers") {
       e.preventDefault();
-      var fd = new FormData(form);
       var body = { server_id: sid };
       var i = 0;
       while (true) {
@@ -538,15 +641,11 @@
         body["hdr_val_" + i] = val.value;
         i++;
       }
-      var newKey = form.querySelector('[name="hdr_new_key"]');
-      var newVal = form.querySelector('[name="hdr_new_val"]');
-      if (newKey && newKey.value.trim()) {
-        body["hdr_new_key"] = newKey.value.trim();
-        body["hdr_new_val"] = newVal ? newVal.value.trim() : "";
-      }
       var removeBtn = e.submitter;
       if (removeBtn && removeBtn.name === "hdr_remove") {
         body["hdr_remove"] = removeBtn.value;
+        var row = removeBtn.closest(".mcp-env-row");
+        if (row) row.remove();
       }
       apiPost("/api/admin/mcp/server/headers", body).then(function() { pollMcpStatus(); });
       return;

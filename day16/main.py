@@ -343,8 +343,16 @@ async def admin_mcp_server_add(request: Request):
     enabled = form.get("enabled", "true").strip().lower() == "true"
     if not server_url:
         return JSONResponse({"error": "server_url required"}, status_code=400)
+    headers_json = form.get("headers_json", "").strip()
+    headers = {}
+    if headers_json:
+        try:
+            headers = json.loads(headers_json)
+        except json.JSONDecodeError:
+            pass
     sid = await mcp_server_manager.add_server(
-        name=name, server_url=server_url, transport=transport, enabled=enabled,
+        name=name, server_url=server_url, transport=transport,
+        headers=headers, enabled=enabled,
     )
     _save_mcp_config(mcp_server_manager.get_server_configs())
     return JSONResponse({"status": "ok", "server_id": sid})

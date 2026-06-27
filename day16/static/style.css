@@ -272,6 +272,8 @@ body.admin-page { display: block; overflow: auto; }
 .mcp-config-form select:focus { outline: none; border-color: var(--accent); }
 
 .mcp-actions { margin-top: 6px; }
+.mcp-actions button { background: var(--accent); }
+.mcp-actions button:hover:not(:disabled) { background: var(--accent-hover); }
 .mcp-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .mcp-tools-list { font-size: 13px; }
