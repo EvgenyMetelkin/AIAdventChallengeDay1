@@ -188,6 +188,9 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function appendMessage(role, content, streaming) {
+    var welcomeEl = messagesContainer.querySelector(".welcome");
+    if (welcomeEl) welcomeEl.remove();
+
     const div = document.createElement("div");
     div.className = "message " + role;
 
@@ -218,6 +221,10 @@ document.addEventListener("DOMContentLoaded", () => {
     if (messagesContainer) {
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
+  }
+
+  if (messagesContainer && !messagesContainer.querySelector(".welcome")) {
+    scrollToBottom();
   }
 
   function showToast(msg, type) {

@@ -133,6 +133,11 @@ def _build_index_context(request: Request):
     agents = {}
     settings = {"model": "gpt-3.5-turbo", "temperature": 0.7, "max_tokens": 500}
 
+    if not user and all_users:
+        first_user_id = all_users[0]["user_id"]
+        request.session["user_id"] = first_user_id
+        user = user_manager.get_user(first_user_id)
+
     if user:
         _resolve_agent(user, request)
         history = user.get_current_history()

@@ -91,22 +91,18 @@
 
   <div class="chat-messages" id="chat-messages">
     {% if current_user and history %}
-      {% for msg in history %}
-        {% if msg.role != 'tool' and (msg.role == 'user' or msg.content) %}
-        <div class="message {{ msg.role }}">
-          <div class="message-icon">
-            {% if msg.role == 'user' %}U
-            {% else %}A{% endif %}
-          </div>
-          <div class="message-content">
-            {% if msg.role == 'assistant' and msg.get('tool_calls') %}
-              <div class="mcp-badge">MCP &middot; {{ msg.tool_calls|map(attribute='function.name')|join(', ') }}</div>
-            {% endif %}
-            {{ msg.content or '' }}
-          </div>
+      {%- for msg in history -%}
+      {%- if msg.role != 'tool' and (msg.role == 'user' or msg.content or msg.get('tool_calls')) -%}
+      <div class="message {{ msg.role }}">
+        <div class="message-icon">{%- if msg.role == 'user' -%}U{%- else -%}A{%- endif -%}</div>
+        <div class="message-content">{%- if msg.role == 'assistant' and msg.get('tool_calls') -%}
+          <div class="mcp-badge">MCP &middot; {{ msg.tool_calls|map(attribute='function.name')|map('replace', '__', ' → ')|join(', ') }}</div>
+        {%- endif -%}
+        {{- msg.content or '' -}}
         </div>
-        {% endif %}
-      {% endfor %}
+      </div>
+      {%- endif -%}
+      {%- endfor -%}
     {% else %}
       <div class="welcome">
         <h2>How can I help you today?</h2>
